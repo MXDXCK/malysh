@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -86,7 +86,12 @@ window.App = {
 };
 function syncLabel() {
   const sy = window.Sync; if (!sy) return '';
-  return { off: 'выключена', connecting: 'подключаюсь…', on: 'работает ✓', offline: 'нет интернета — изменения отправятся позже', error: 'ошибка: ' + (sy.error || 'неизвестно') }[sy.status] || sy.status;
+  const err = String(sy.error || '');
+  const why = /operation-not-allowed|admin-restricted/.test(err) ? 'в Firebase не включён анонимный вход (Authentication → Sign-in method → Anonymous)'
+    : /permission-denied/.test(err) ? 'нет доступа — проверьте правила Firestore (вкладка Rules → Publish)'
+    : /not-found|NOT_FOUND/.test(err) ? 'база Firestore не найдена — создайте базу (default)'
+    : 'ошибка: ' + (err || 'неизвестно');
+  return { off: 'выключена', connecting: 'подключаюсь…', on: 'работает ✓', offline: 'нет интернета — изменения отправятся позже', error: why }[sy.status] || sy.status;
 }
 
 /* ---------------- Даты и форматирование ---------------- */
@@ -826,6 +831,14 @@ function syncBlock() {
     <button type="button" class="btn ghost danger" data-x="sync-off">Отключить на этом телефоне</button></div>`;
 }
 
+// Сохраняем имя/дату/тему, введённые в настройках, перед перерисовкой шторки
+function keepSettingsFields() {
+  const f = dlg.querySelector('form'); if (!f || !f.elements.birth) return;
+  const fd = Object.fromEntries(new FormData(f));
+  Object.assign(S.profile, { name: (fd.name || '').trim(), birth: fd.birth || '', theme: fd.theme || S.profile.theme });
+  save();
+}
+
 /* ---------------- Резервная копия ---------------- */
 async function exportData() {
   const json = JSON.stringify({ app: 'malysh', version: APP_VERSION, exported: new Date().toISOString(), data: S }, null, 2);
@@ -908,6 +921,7 @@ document.addEventListener('click', e => {
   if (d.x === 'import') return importData();
   if (d.x === 'check') return checkUpdate(true);
   if (d.x === 'whatsnew') return whatsNew();
+  if (d.x && d.x.startsWith('sync-')) keepSettingsFields();
   if (d.x === 'sync-create') return window.Sync && window.Sync.create().then(() => settingsForm());
   if (d.x === 'sync-join') {
     const code = (dlg.querySelector('[name=joincode]') || {}).value || '';
