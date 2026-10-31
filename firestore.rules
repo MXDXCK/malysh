@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Данные семьи доступны только тем, кто знает её 19-значный код (XXXX-XXXX-XXXX-XXXX).
+    // Список семей получить нельзя — правила для /families нет.
+    match /families/{family}/items/{item} {
+      allow read, write: if request.auth != null && family.size() == 19;
+    }
+  }
+}
