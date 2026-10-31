@@ -339,3 +339,57 @@ dialog[open] { animation: up .22s ease-out; }
 .vgroup h3 small { color: var(--muted); font-size: 13px; }
 details.tips summary { font-weight: 800; cursor: pointer; list-style-position: inside; }
 details.tips ul { margin: 10px 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; }
+
+/* ---- 1.2.1: вёрстка под iPhone (Safari) ---- */
+html { overscroll-behavior-y: none; }
+#app { min-height: 100vh; min-height: 100dvh; overflow-x: clip; }
+body:has(dialog[open]) { overflow: hidden; }
+button, a, .tile, .q { touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+/* Поля ввода: в Safari дата/время по умолчанию не сжимаются и вылезают за край */
+.field { min-width: 0; }
+.field input:not([type="radio"]):not([type="checkbox"]), .field select, .field textarea {
+  -webkit-appearance: none; appearance: none; display: block; width: 100%; min-width: 0; max-width: 100%;
+  line-height: 24px; color: var(--text); background-color: var(--surface);
+}
+.field input[type="date"], .field input[type="datetime-local"] { text-align: left; min-height: 50px; }
+.field input::-webkit-date-and-time-value { text-align: left; margin: 0; }
+.field input::-webkit-datetime-edit { padding: 0; }
+.field select {
+  padding-right: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238A7B70' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 14px center; background-size: 18px;
+}
+.checkline input { -webkit-appearance: auto; appearance: auto; flex: none; }
+
+/* Ячейки сеток не должны растягивать колонки */
+.two > *, .three > *, .stats > *, .sleep-sum > *, .tiles > *, .quick > *, .sides > *, .bars > * { min-width: 0; }
+.stat b, .sleep-sum b { overflow-wrap: anywhere; }
+.row-main b, .row-main small { min-width: 0; }
+
+/* Шторка: учитываем клавиатуру и «чёлку» */
+dialog { max-height: 92vh; max-height: 92dvh; overscroll-behavior: contain; }
+.sheet { max-height: 92vh; max-height: 92dvh; }
+.sheet-body { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+
+/* Боковые безопасные зоны (поворот экрана) */
+.top, main.view { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+.tabbar { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+
+/* Нижнее меню из 6 вкладок на узких iPhone (SE, mini) */
+.tabbar a { min-width: 0; overflow: hidden; }
+.tabbar a > :last-child, .tabbar a { text-overflow: ellipsis; }
+@media (max-width: 389px) {
+  .tabbar a { font-size: 9.5px; padding-left: 0; padding-right: 0; }
+  .tabbar a .pip { width: 40px; height: 28px; }
+  .tabbar svg { width: 20px; height: 20px; }
+  .q { min-height: 76px; font-size: 13px; }
+  .sleep-now b { font-size: 24px; }
+  .hero h2 { font-size: 21px; }
+  .stat b { font-size: 19px; }
+  .three { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 340px) {
+  .tabbar a { font-size: 0; gap: 0; }
+  .tabbar a .pip { width: 36px; }
+}
