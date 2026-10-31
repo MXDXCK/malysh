@@ -1,7 +1,7 @@
 // Service worker: приложение работает без интернета.
 // Файлы сайта — «сначала сеть, потом кэш», чтобы обновления приходили сразу.
 // Библиотеки Firebase и шрифты (неизменяемые версии) — «сначала кэш».
-const CACHE = 'malysh-1.0.0';
+const CACHE = 'malysh-1.1.0';
 const SHELL = ['./', './index.html', './style.css', './app.js', './sync.js', './firebase-config.js', './manifest.webmanifest', './version.json', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 const STATIC_HOSTS = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 

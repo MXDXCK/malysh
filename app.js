@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -16,7 +16,7 @@ const sum = (arr, f) => arr.reduce((a, x) => a + (f(x) || 0), 0);
 
 /* ---------------- Хранилище ---------------- */
 function defaults() {
-  return { profile: { name: '', birth: '', theme: 'auto' }, events: [], growth: [], vacc: { done: {}, custom: [] }, timers: {} };
+  return { profile: { name: '', birth: '', theme: 'auto' }, events: [], growth: [], vacc: { done: {}, custom: [] }, solids: {}, solidsCustom: [], timers: {} };
 }
 function normalize(d) {
   const b = defaults();
@@ -26,7 +26,9 @@ function normalize(d) {
     events: Array.isArray(d.events) ? d.events : [],
     growth: Array.isArray(d.growth) ? d.growth : [],
     vacc: { done: (d.vacc && d.vacc.done) || {}, custom: (d.vacc && Array.isArray(d.vacc.custom)) ? d.vacc.custom : [] },
-    timers: d.timers || {},
+    solids: (d.solids && typeof d.solids === 'object') ? d.solids : {},
+    solidsCustom: Array.isArray(d.solidsCustom) ? d.solidsCustom : [],
+    timers: (() => { const t = { ...(d.timers || {}) }; delete t.breast; return t; })(), // грудное вскармливание убрано в 1.1.0
   };
 }
 function load() {
@@ -49,6 +51,8 @@ function flatten(st = S) {
   st.growth.forEach(g => { f['gr_' + g.id] = JSON.stringify(g); });
   Object.entries(st.vacc.done).forEach(([k, v]) => { f['vd_' + k] = JSON.stringify(v); });
   st.vacc.custom.forEach(c => { f['cu_' + c.id] = JSON.stringify(c); });
+  Object.entries(st.solids || {}).forEach(([k, v]) => { f['sf_' + k] = JSON.stringify(v); });
+  (st.solidsCustom || []).forEach(c => { f['sp_' + c.key] = JSON.stringify(c); });
   return f;
 }
 function unflatten(map) {
@@ -62,6 +66,8 @@ function unflatten(map) {
     else if (id.startsWith('gr_')) st.growth.push(v);
     else if (id.startsWith('vd_')) st.vacc.done[id.slice(3)] = v;
     else if (id.startsWith('cu_')) st.vacc.custom.push(v);
+    else if (id.startsWith('sf_')) st.solids[id.slice(3)] = v;
+    else if (id.startsWith('sp_')) st.solidsCustom.push(v);
   }
   return st;
 }
@@ -153,6 +159,9 @@ const I = {
   x: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
   check: svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>'),
   refresh: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  chevL: svg('<path d="m15 18-6-6 6-6"/>'),
+  chevR: svg('<path d="m9 18 6-6-6-6"/>'),
 };
 
 /* ---------------- Календарь прививок (национальный календарь РФ) ---------------- */
@@ -274,7 +283,7 @@ function whatsNew() {
 /* ---------------- Рендер ---------------- */
 let tab = location.hash.slice(1) || 'today';
 let metric = 'weight';
-const TABS = [['today', 'Сегодня', I.home], ['feed', 'Кормление', I.bottle], ['sleep', 'Сон', I.moon], ['growth', 'Рост', I.chart], ['vacc', 'Прививки', I.shield]];
+const TABS = [['today', 'Сегодня', I.home], ['sleep', 'Сон', I.moon], ['feed', 'Кормление', I.bottle], ['solid', 'Прикорм', I.bowl], ['growth', 'Рост', I.chart], ['vacc', 'Прививки', I.shield]];
 
 function applyTheme() {
   const t = S.profile.theme;
@@ -303,46 +312,115 @@ function tick() {
   });
 }
 
-/* ---- Карточки таймеров ---- */
-function breastCard() {
-  const b = S.timers.breast;
-  const live = sd => (b.side === sd ? ` data-since="${b.segStart}"` : '');
-  return `<section class="card timer feed">
-    <div class="timer-head"><span class="dot feed">${I.heart}</span><div><small>Кормление грудью · с ${hhmm(b.start)}${b.side ? '' : ' · на паузе'}</small><b data-base="${b.L + b.R}"${b.side ? ` data-since="${b.segStart}"` : ''}></b></div></div>
-    <div class="sides">${['L', 'R'].map(sd => `<button class="side ${b.side === sd ? 'on' : ''}" data-act="breast-${sd}"><span>${sd === 'L' ? 'Левая' : 'Правая'}</span><b data-base="${b[sd]}"${live(sd)}></b><small>${b.side === sd ? 'нажмите — пауза' : b.side ? 'переключиться' : 'продолжить'}</small></button>`).join('')}</div>
-    <div class="timer-actions"><button class="btn ghost" data-act="breast-cancel">Отменить</button><button class="btn primary" data-act="breast-stop">${I.check} Завершить</button></div>
-  </section>`;
+/* ---- Сон: дневной и ночной ---- */
+// Ночной сон относится к дате утра, когда малыш проснулся (ночь «на 31 октября»)
+function autoKind(ts) { const h = new Date(ts).getHours(); return (h >= 19 || h < 6) ? 'night' : 'day'; }
+const sleepKind = e => e.kind || autoKind(e.start);
+function nightKey(ts) { return new Date(ts).getHours() >= 12 ? dateStr(addDays(ts, 1)) : dateStr(ts); }
+function allSleeps() {
+  const l = S.events.filter(e => e.type === 'sleep');
+  const t = S.timers.sleep;
+  if (t) l.push({ id: 'live', type: 'sleep', start: t.start, end: Date.now(), live: true, kind: t.kind || autoKind(t.start) });
+  return l;
 }
-function sleepCard() {
-  const s = S.timers.sleep;
-  return `<section class="card timer sleep">
-    <div class="timer-head"><span class="dot sleep">${I.moon}</span><div><small>Спит с ${hhmm(s.start)}</small><b data-since="${s.start}"></b></div></div>
-    <div class="timer-actions"><button class="btn ghost" data-act="sleep-cancel">Отменить</button><button class="btn sleep" data-act="sleep-toggle">Проснулся</button></div>
-  </section>`;
+function sleepsFor(D) {
+  const all = allSleeps(), by = (a, b) => a.start - b.start;
+  return {
+    night: all.filter(e => sleepKind(e) === 'night' && nightKey(e.start) === D).sort(by),
+    day: all.filter(e => sleepKind(e) === 'day' && dayKey(e.start) === D).sort(by),
+  };
+}
+const sleepDur = l => sum(l, e => e.end - e.start);
+function durS(ms) { const m = Math.round(ms / MIN); if (m < 60) return m + ' мин'; return Math.floor(m / 60) + ' ч' + (m % 60 ? ' ' + m % 60 + ' м' : ''); }
+function sleepTile(e, label) {
+  const inner = `<small>${label}</small><b>${e.live ? `<span data-since="${e.start}"></span>` : durS(e.end - e.start)}</b><span>${hhmm(e.start)} – ${e.live ? 'спит' : hhmm(e.end)}</span>`;
+  return e.live ? `<div class="tile ${sleepKind(e)} live">${inner}</div>` : `<button class="tile ${sleepKind(e)}" data-ev="${e.id}">${inner}</button>`;
+}
+const fmtDM = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' });
+// Блок плашек сна за дату D. nightD — дата ночи, которую показываем (по умолчанию ночь на D)
+function sleepBlocks(D, nightD = D, nightTitle) {
+  const n = sleepsFor(nightD).night, d = sleepsFor(D).day;
+  const nt = nightTitle || 'Ночь на ' + fmtDM.format(parseDate(nightD));
+  const wakes = n.length > 1 ? ` · просыпался ${n.length - 1} ${pl(n.length - 1, ['раз', 'раза', 'раз'])}` : '';
+  return `<div class="sp-head night"><h4>${I.moon}${nt}</h4><span>${n.length ? dur(sleepDur(n)) + wakes : ''}</span></div>
+    <div class="tiles">${n.map((e, i) => sleepTile(e, n.length > 1 ? 'Часть ' + (i + 1) : 'Ночной сон')).join('')}<button class="tile add night" data-act="add-sleep" data-kind="night" data-d="${nightD}">${I.plus}<span>Ночь</span></button></div>
+    <div class="sp-head day"><h4>${I.sun}Дневной сон</h4><span>${d.length ? d.length + ' ' + pl(d.length, ['раз', 'раза', 'раз']) + ' · ' + dur(sleepDur(d)) : ''}</span></div>
+    <div class="tiles">${d.map((e, i) => sleepTile(e, 'Сон ' + (i + 1))).join('')}<button class="tile add day" data-act="add-sleep" data-kind="day" data-d="${D}">${I.plus}<span>Дневной</span></button></div>`;
+}
+function sleepButton() {
+  const t = S.timers.sleep;
+  if (t) {
+    const k = t.kind || autoKind(t.start);
+    return `<div class="sleep-now ${k}"><div><small>${k === 'night' ? 'Ночной сон' : 'Дневной сон'} · с ${hhmm(t.start)}</small><b data-since="${t.start}"></b></div>
+      <button class="btn ghost small" data-act="sleep-cancel">Отмена</button><button class="btn sleep" data-act="sleep-toggle">${I.sun} Проснулся</button></div>`;
+  }
+  const k = autoKind(Date.now());
+  const last = latest(S.events.filter(e => e.type === 'sleep'), 'end');
+  return `<div class="sleep-now idle"><div><small>${last ? 'Бодрствует · проснулся в ' + hhmm(last.end) : 'Малыш бодрствует'}</small><b>${last ? dur(Date.now() - last.end) : '—'}</b></div>
+    <button class="btn sleep" data-act="sleep-toggle">${I.moon} Уснул</button></div><p class="hint" style="margin:8px 0 0">Начнётся ${k === 'night' ? 'ночной' : 'дневной'} сон — тип можно поменять, нажав на плашку</p>`;
+}
+function partOfDay(h) { return h < 5 ? 'Доброй ночи' : h < 12 ? 'Доброе утро' : h < 17 ? 'Добрый день' : h < 23 ? 'Добрый вечер' : 'Доброй ночи'; }
+
+/* ---- Прикорм: продукты ---- */
+const SOLID_GROUPS = [
+  { g: 'veg', title: 'Овощи', from: 'с 4–6 мес', tip: 'Чаще всего первый прикорм. Начинают с одного светлого овоща — кабачка или цветной капусты.', items: [['zucchini', 'Кабачок'], ['cauliflower', 'Цветная капуста'], ['broccoli', 'Брокколи'], ['pumpkin', 'Тыква'], ['carrot', 'Морковь'], ['potato', 'Картофель']] },
+  { g: 'cereal', title: 'Безмолочные каши', from: 'с 4–6 мес', tip: 'Сначала безглютеновые — гречневая, рисовая, кукурузная. Разводят смесью, которую пьёт малыш.', items: [['buckwheat', 'Гречневая каша'], ['rice', 'Рисовая каша'], ['corn', 'Кукурузная каша'], ['oat', 'Овсяная каша'], ['multigrain', 'Мультизлаковая каша']] },
+  { g: 'oil', title: 'Масло', from: 'с 4–6 мес', tip: 'Растительное добавляют в овощное пюре, сливочное — в кашу, начиная с нескольких капель.', items: [['vegoil', 'Растительное масло'], ['butter', 'Сливочное масло']] },
+  { g: 'fruit', title: 'Фрукты', from: 'с 4–6 мес', tip: 'Обычно после овощей и каш, чтобы малыш не привык сразу к сладкому.', items: [['apple', 'Яблоко'], ['pear', 'Груша'], ['banana', 'Банан'], ['prune', 'Чернослив'], ['peach', 'Персик'], ['apricot', 'Абрикос']] },
+  { g: 'meat', title: 'Мясо', from: 'с 6 мес', tip: 'Начинают с нежирных сортов — индейка, кролик.', items: [['turkey', 'Индейка'], ['rabbit', 'Кролик'], ['beef', 'Говядина / телятина'], ['chicken', 'Курица']] },
+  { g: 'dairy', title: 'Творог и яйцо', from: 'с 6–7 мес', tip: 'Творог — примерно с 6 мес, желток — с 7 мес, начиная с крошки.', items: [['cottage', 'Творог'], ['yolk', 'Желток']] },
+  { g: 'bread', title: 'Печенье и хлеб', from: 'с 7–8 мес', tip: '', items: [['cookie', 'Детское печенье / сухарик'], ['bread', 'Пшеничный хлеб']] },
+  { g: 'kefir', title: 'Кисломолочные', from: 'с 8 мес', tip: '', items: [['kefir', 'Детский кефир'], ['yogurt', 'Детский йогурт']] },
+  { g: 'fish', title: 'Рыба', from: 'с 8–9 мес', tip: 'Нежирная белая рыба, 1–2 раза в неделю вместо мяса.', items: [['cod', 'Треска'], ['hake', 'Хек']] },
+];
+function allProducts() {
+  const l = [];
+  SOLID_GROUPS.forEach(gr => gr.items.forEach(([key, name]) => l.push({ key, name, g: gr.g })));
+  (S.solidsCustom || []).forEach(c => l.push({ ...c, custom: true }));
+  return l;
+}
+const findProduct = name => { const n = String(name || '').trim().toLowerCase(); return allProducts().find(p => p.name.toLowerCase() === n); };
+function servingsOf(p) {
+  const n = p.name.toLowerCase();
+  return S.events.filter(e => e.type === 'solid' && (e.product === p.key || (e.food || '').trim().toLowerCase() === n)).sort((a, b) => a.start - b.start);
+}
+function productState(p) {
+  const st = S.solids[p.key] || {};
+  const sv = servingsOf(p);
+  const start = st.start || (sv[0] ? dateStr(sv[0].start) : '');
+  const reaction = sv.some(e => e.reaction);
+  return { start, done: st.done || '', note: st.note || '', servings: sv, reaction };
+}
+function daysSince(dstr) { return Math.round((startOfDay(Date.now()) - parseDate(dstr).getTime()) / DAY) + 1; }
+function productRow(p) {
+  const s = productState(p);
+  let sub = 'ещё не пробовали', pill = '';
+  if (s.done) { sub = 'Введён ' + fmtDM.format(parseDate(s.done)) + (s.start ? ' · начали ' + fmtShort.format(parseDate(s.start)) : ''); }
+  else if (s.start) { const n = daysSince(s.start); sub = 'Вводим с ' + fmtDM.format(parseDate(s.start)) + ' · день ' + n; pill = n >= 7 ? '<span class="pill done">можно отметить</span>' : '<span class="pill soon">вводим</span>'; }
+  if (s.reaction) pill = '<span class="pill late">реакция</span>';
+  return `<div class="row prod ${s.done ? 'done' : ''}"><button class="check" data-spc="${p.key}" aria-label="${s.done ? 'Снять отметку' : 'Отметить введённым'}">${s.done ? I.check : ''}</button><button class="row-main" data-sp="${p.key}"><b>${esc(p.name)}</b><small>${sub}</small></button>${pill}</div>`;
 }
 
 /* ---- Строки истории ---- */
 function meta(e) {
   const note = e.note ? ' · ' + esc(e.note) : '';
   switch (e.type) {
-    case 'breast': {
-      const parts = []; if (e.L) parts.push('левая ' + dur(e.L)); if (e.R) parts.push('правая ' + dur(e.R));
-      return { cls: 'feed', icon: I.heart, title: 'Грудь · ' + dur(breastMs(e)), sub: parts.join(' · ') + note };
-    }
-    case 'bottle': return { cls: 'feed', icon: I.bottle, title: 'Бутылочка · ' + (e.ml || 0) + ' мл', sub: (e.kind === 'breastmilk' ? 'Грудное молоко' : 'Смесь') + note };
+    case 'breast': return { cls: 'feed', icon: I.heart, title: 'Грудь · ' + dur(breastMs(e)), sub: 'запись из прошлой версии' + note };
+    case 'bottle': return { cls: 'feed', icon: I.bottle, title: 'Бутылочка · ' + (e.ml || 0) + ' мл', sub: (e.kind === 'breastmilk' ? 'Сцеженное молоко' : 'Смесь') + note };
     case 'solid': return { cls: 'solid', icon: I.bowl, title: esc(e.food || 'Прикорм') + (e.grams ? ' · ' + e.grams + ' г' : ''), sub: 'Прикорм' + (e.reaction ? ' · реакция: ' + REACTIONS[e.reaction].toLowerCase() : '') + note };
-    case 'sleep': return { cls: 'sleep', icon: I.moon, title: 'Сон · ' + dur(e.end - e.start), sub: hhmm(e.start) + ' – ' + hhmm(e.end) + (dayKey(e.start) !== dayKey(e.end) ? ' (след. день)' : '') + note };
+    case 'sleep': return { cls: 'sleep', icon: sleepKind(e) === 'night' ? I.moon : I.sun, title: (sleepKind(e) === 'night' ? 'Ночной сон · ' : 'Дневной сон · ') + dur(e.end - e.start), sub: hhmm(e.start) + ' – ' + hhmm(e.end) + (dayKey(e.start) !== dayKey(e.end) ? ' (след. день)' : '') + note };
   }
   return { cls: '', icon: '', title: '', sub: '' };
 }
-function evRow(e) {
+function evRow(e, withDate) {
   const m = meta(e);
-  return `<button class="row" data-ev="${e.id}"><span class="dot ${m.cls}">${m.icon}</span><span class="row-main"><b>${m.title}</b><small>${m.sub}</small></span><span class="row-time">${hhmm(e.start)}</span></button>`;
+  return `<button class="row" data-ev="${e.id}"><span class="dot ${m.cls}">${m.icon}</span><span class="row-main"><b>${m.title}</b><small>${m.sub}</small></span><span class="row-time">${withDate === true ? fmtShort.format(e.start) + '<br>' : ''}${hhmm(e.start)}</span></button>`;
 }
 function daySummary(items) {
   const f = items.filter(isFeed).length, ml = sum(items.filter(e => e.type === 'bottle'), e => +e.ml);
   const sl = sum(items.filter(e => e.type === 'sleep'), e => e.end - e.start);
-  return [f ? f + ' ' + pl(f, ['кормление', 'кормления', 'кормлений']) : '', ml ? ml + ' мл' : '', sl ? 'сон ' + dur(sl) : ''].filter(Boolean).join(' · ');
+  const so = items.filter(e => e.type === 'solid').length;
+  return [f ? f + ' ' + pl(f, ['кормление', 'кормления', 'кормлений']) : '', ml ? ml + ' мл' : '', so ? 'прикорм ' + so : '', sl ? 'сон ' + dur(sl) : ''].filter(Boolean).join(' · ');
 }
 function history(list, emptyText, limit = 30) {
   if (!list.length) return `<p class="empty">${emptyText}</p>`;
@@ -350,74 +428,110 @@ function history(list, emptyText, limit = 30) {
   [...list].sort((a, b) => b.start - a.start).forEach(e => { const k = dayKey(e.start); if (!g.has(k)) g.set(k, []); g.get(k).push(e); });
   return [...g.values()].slice(0, limit).map(items => `<section class="day"><h3>${dayLabel(items[0].start)}<small>${daySummary(items)}</small></h3><div class="list">${items.map(evRow).join('')}</div></section>`).join('');
 }
+function bars(days, fmtV, cls = '') {
+  const max = Math.max(1, ...days.map(d => d.total));
+  const today = startOfDay(Date.now());
+  return `<div class="bars ${cls}">${days.map(d => `<div class="bar ${d.t === today ? 'today' : ''}"><span class="v">${d.total ? fmtV(d.total) : ''}</span><span class="track">${(d.parts || [{ v: d.total, c: '' }]).map(p => `<i class="${p.c}" style="height:${p.v / max * 100}%"></i>`).join('')}</span><small>${d.t === today ? 'сег' : fmtWd.format(d.t)}</small></div>`).join('')}</div>`;
+}
+const lastDays = n => { const t = startOfDay(Date.now()), l = []; for (let i = n - 1; i >= 0; i--) l.push(startOfDay(addDays(t, -i))); return l; };
 
 /* ---- Экраны ---- */
+let sleepDay = todayStr();
 const VIEWS = {
   today() {
-    const now = Date.now(), t0 = startOfDay(now);
+    const now = Date.now(), t0 = startOfDay(now), D = todayStr(), h = new Date(now).getHours();
     const ev = S.events.filter(e => e.start >= t0);
-    const feeds = ev.filter(isFeed);
-    const bMs = sum(ev.filter(e => e.type === 'breast'), breastMs);
+    const bottles = ev.filter(isFeed);
     const ml = sum(ev.filter(e => e.type === 'bottle'), e => +e.ml);
-    const slMs = sleepOn(t0);
     const lastFeed = latest(S.events.filter(isFeed));
-    const lastSleep = latest(S.events.filter(e => e.type === 'sleep'), 'end');
-    let h = updateBanner() + installHint();
-    if (!S.profile.birth) h += `<section class="card hello"><h3>Добро пожаловать! 👋</h3><p>Укажите имя и дату рождения малыша — приложение посчитает возраст и составит календарь прививок.</p><button class="btn primary" data-act="settings">Заполнить профиль</button></section>`;
-    if (S.timers.breast) h += breastCard();
-    if (S.timers.sleep) h += sleepCard();
-    h += `<section class="quick">
-      <button class="q feed" data-act="breast-L">${I.heart}<span>Грудь · левая</span></button>
-      <button class="q feed" data-act="breast-R">${I.heart}<span>Грудь · правая</span></button>
+    let out = updateBanner() + installHint();
+    out += `<section class="hero"><small>${fmtDay.format(now)}</small><h2>${partOfDay(h)}${S.profile.name ? ', ' + esc(S.profile.name) : ''}!</h2></section>`;
+    if (!S.profile.birth) out += `<section class="card hello"><h3>Добро пожаловать! 👋</h3><p>Укажите имя и дату рождения малыша — приложение посчитает возраст и составит календарь прививок.</p><button class="btn primary" data-act="settings">Заполнить профиль</button></section>`;
+    // Вечером показываем наступающую ночь, днём — прошедшую
+    const evening = h >= 17 || (S.timers.sleep && nightKey(S.timers.sleep.start) !== D && (S.timers.sleep.kind || autoKind(S.timers.sleep.start)) === 'night');
+    const nightD = evening ? dateStr(addDays(t0, 1)) : D;
+    const { night: n } = sleepsFor(nightD), { day: dd } = sleepsFor(D);
+    out += `<section class="card sleep-card"><div class="card-head"><h3>Сон</h3><a href="#sleep" class="link">Все дни ›</a></div>
+      ${sleepButton()}
+      <div class="sleep-sum"><div class="night"><small>${evening ? 'Эта ночь' : 'Прошлая ночь'}</small><b>${n.length ? durS(sleepDur(n)) : '—'}</b></div><div class="day"><small>Днём сегодня</small><b>${dd.length ? durS(sleepDur(dd)) : '—'}</b></div></div>
+      ${sleepBlocks(D, nightD, evening ? 'Эта ночь' : 'Прошлая ночь')}</section>`;
+    out += `<section class="quick">
       <button class="q feed" data-act="add-bottle">${I.bottle}<span>Бутылочка</span></button>
       <button class="q solid" data-act="add-solid">${I.bowl}<span>Прикорм</span></button>
-      <button class="q sleep" data-act="sleep-toggle">${I.moon}<span>${S.timers.sleep ? 'Проснулся' : 'Уснул'}</span></button>
       <button class="q growth" data-act="add-growth">${I.chart}<span>Рост и вес</span></button>
     </section>`;
-    const awake = S.timers.sleep ? null : lastSleep ? now - lastSleep.end : null;
-    h += `<section class="stats">
-      <div class="stat feed"><small>Кормлений сегодня</small><b>${feeds.length}</b><span>${[bMs ? 'грудь ' + dur(bMs) : '', ml ? ml + ' мл' : ''].filter(Boolean).join(' · ') || 'пока не было'}</span></div>
-      <div class="stat sleep"><small>Сон сегодня</small><b>${slMs ? dur(slMs) : '0 мин'}</b><span>${sum(ev.filter(e => e.type === 'sleep'), () => 1) || 0} ${pl(ev.filter(e => e.type === 'sleep').length, ['раз', 'раза', 'раз'])}</span></div>
-      <div class="stat"><small>Последнее кормление</small><b>${S.timers.breast ? 'сейчас' : lastFeed ? hhmm(lastFeed.start) : '—'}</b><span>${!S.timers.breast && lastFeed ? ago(lastFeed.start) : '&nbsp;'}</span></div>
-      <div class="stat"><small>${S.timers.sleep ? 'Спит' : 'Бодрствует'}</small><b>${S.timers.sleep ? dur(now - S.timers.sleep.start) : awake != null ? dur(awake) : '—'}</b><span>${S.timers.sleep ? 'с ' + hhmm(S.timers.sleep.start) : lastSleep ? 'проснулся в ' + hhmm(lastSleep.end) : '&nbsp;'}</span></div>
+    out += `<section class="stats">
+      <div class="stat feed"><small>Бутылочек сегодня</small><b>${bottles.length}</b><span>${ml ? ml + ' мл всего' : 'пока не было'}</span></div>
+      <div class="stat"><small>Последнее кормление</small><b>${lastFeed ? hhmm(lastFeed.start) : '—'}</b><span>${lastFeed ? ago(lastFeed.start) : '&nbsp;'}</span></div>
     </section>`;
     if (S.profile.birth) {
       const next = schedule().filter(v => !v.done).sort((a, b) => a.due - b.due)[0];
-      if (next) h += `<section class="list"><button class="row" data-tab="vacc"><span class="dot vacc">${I.shield}</span><span class="row-main"><b>${esc(next.n)}</b><small>Ближайшая прививка · ${fmtLong.format(next.due)}</small></span>${next.st[1] ? `<span class="pill ${next.st[0]}">${next.st[1]}</span>` : ''}</button></section>`;
+      if (next) out += `<section class="list"><button class="row" data-tab="vacc"><span class="dot vacc">${I.shield}</span><span class="row-main"><b>${esc(next.n)}</b><small>Ближайшая прививка · ${fmtLong.format(next.due)}</small></span>${next.st[1] ? `<span class="pill ${next.st[0]}">${next.st[1]}</span>` : ''}</button></section>`;
     }
-    h += ev.length ? `<section class="day"><h3>Записи за сегодня</h3><div class="list">${[...ev].sort((a, b) => b.start - a.start).map(evRow).join('')}</div></section>` : `<p class="empty">Сегодня ещё нет записей.<br>Нажмите на кнопку выше, чтобы добавить.</p>`;
-    return h;
-  },
-
-  feed() {
-    let h = '';
-    if (S.timers.breast) h += breastCard();
-    else {
-      const sg = nextSideSuggestion();
-      h += `<section class="card"><h3>Кормление грудью</h3>${sg ? `<p class="hint">В прошлый раз закончили на ${sg === 'L' ? 'правой' : 'левой'} — начните с ${sg === 'L' ? 'левой' : 'правой'}.</p>` : '<p class="hint">Нажмите на сторону — запустится таймер.</p>'}
-        <div class="sides">${['L', 'R'].map(sd => `<button class="side ${sg === sd ? 'suggest' : ''}" data-act="breast-${sd}"><span>${sd === 'L' ? 'Левая' : 'Правая'}</span><b>Старт</b><small>${sg === sd ? 'по очереди эта' : '&nbsp;'}</small></button>`).join('')}</div></section>`;
-    }
-    h += `<div class="actions-row"><button class="btn soft feed" data-act="add-bottle">${I.plus} Бутылочка</button><button class="btn soft solid" data-act="add-solid">${I.plus} Прикорм</button><button class="btn soft feed" data-act="add-breast">${I.plus} Грудь вручную</button></div>`;
-    const foods = foodSummary();
-    if (foods.length) h += `<section class="card"><h3>Введённые продукты · ${foods.length}</h3><div class="chips">${foods.map(f => `<span class="chip ${f.reaction ? 'warn' : ''}">${esc(f.name)}<small>с ${fmtShort.format(f.first)}${f.reaction ? ' · была реакция' : ''}</small></span>`).join('')}</div></section>`;
-    h += history(S.events.filter(isFeedAny), 'Пока нет записей о кормлениях');
-    return h;
+    const other = ev.filter(e => e.type !== 'sleep');
+    if (other.length) out += `<section class="day"><h3>Кормления и прикорм сегодня</h3><div class="list">${[...other].sort((a, b) => b.start - a.start).map(evRow).join('')}</div></section>`;
+    return out;
   },
 
   sleep() {
-    const now = Date.now();
-    const lastSleep = latest(S.events.filter(e => e.type === 'sleep'), 'end');
-    let h = S.timers.sleep ? sleepCard() : `<section class="card sleep-start"><button class="big sleep" data-act="sleep-toggle">${I.moon}<span>Уснул</span></button><p class="muted">${lastSleep ? 'Бодрствует ' + dur(now - lastSleep.end) + ' · проснулся в ' + hhmm(lastSleep.end) : 'Нажмите, когда малыш уснёт'}</p></section>`;
-    h += `<div class="actions-row"><button class="btn soft sleep" data-act="add-sleep">${I.plus} Добавить сон вручную</button></div>`;
-    const today = startOfDay(now);
-    const days = []; for (let i = 6; i >= 0; i--) { const t = startOfDay(addDays(today, -i)); days.push({ t, ms: sleepOn(t) }); }
-    const max = Math.max(HOUR * 12, ...days.map(d => d.ms));
-    const withData = days.filter(d => d.ms > 0 && d.t !== today);
-    const avg = withData.length ? sum(withData, d => d.ms) / withData.length : 0;
-    h += `<section class="card"><h3>Сон за неделю</h3>${avg ? `<p class="hint">В среднем ${dur(avg)} в сутки</p>` : ''}
-      <div class="bars">${days.map(d => `<div class="bar ${d.t === today ? 'today' : ''}"><span class="v">${d.ms ? (d.ms / HOUR).toFixed(1).replace('.', ',') : ''}</span><span class="track"><i style="height:${Math.max(2, d.ms / max * 100)}%"></i></span><small>${d.t === today ? 'сег' : fmtWd.format(d.t)}</small></div>`).join('')}</div></section>`;
-    h += history(S.events.filter(e => e.type === 'sleep'), 'Пока нет записей о сне');
-    return h;
+    const D = sleepDay, isToday = D === todayStr();
+    const label = D === todayStr() ? 'Сегодня' : D === dateStr(addDays(Date.now(), -1)) ? 'Вчера' : fmtDay.format(parseDate(D));
+    const { night, day } = sleepsFor(D);
+    let out = `<section class="card sleep-card">${sleepButton()}</section>`;
+    out += `<section class="card"><div class="daynav"><button class="icon-btn" data-day="-1" aria-label="Предыдущий день">${I.chevL}</button>
+      <label><b>${label}</b><input type="date" id="sleep-date" value="${D}" max="${todayStr()}"></label>
+      <button class="icon-btn" data-day="1" aria-label="Следующий день" ${isToday ? 'disabled' : ''}>${I.chevR}</button></div>
+      <div class="sleep-sum"><div class="night"><small>Ночью</small><b>${night.length ? durS(sleepDur(night)) : '—'}</b></div><div class="day"><small>Днём</small><b>${day.length ? durS(sleepDur(day)) : '—'}</b></div><div><small>Всего</small><b>${durS(sleepDur(night) + sleepDur(day))}</b></div></div>
+      ${sleepBlocks(D)}
+      <p class="hint" style="margin:12px 0 0">Нажмите на плашку, чтобы изменить время, тип сна или удалить запись. Стрелками или по дате можно открыть любой прошлый день и дописать сон.</p></section>`;
+    const days = lastDays(7).map(t => { const s = sleepsFor(dateStr(t)); const nv = sleepDur(s.night), dv = sleepDur(s.day); return { t, total: nv + dv, parts: [{ v: dv, c: 'day' }, { v: nv, c: 'night' }] }; });
+    const withData = days.filter(d => d.total && d.t !== startOfDay(Date.now()));
+    out += `<section class="card"><h3>Сон за неделю</h3><p class="hint">${withData.length ? 'В среднем ' + dur(sum(withData, d => d.total) / withData.length) + ' в сутки · ' : ''}<span class="lg night"></span> ночь <span class="lg day"></span> день</p>${bars(days, v => (v / HOUR).toFixed(1).replace('.', ','), 'stack')}</section>`;
+    out += history(S.events.filter(e => e.type === 'sleep'), 'Пока нет записей о сне');
+    return out;
+  },
+
+  feed() {
+    const now = Date.now(), t0 = startOfDay(now);
+    const today = S.events.filter(e => e.start >= t0 && e.type === 'bottle');
+    const last = latest(S.events.filter(isFeed));
+    let out = `<section class="card feed-card"><div class="stats" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="stat feed"><small>Сегодня</small><b>${sum(today, e => +e.ml)}</b><span>мл</span></div>
+        <div class="stat feed"><small>Бутылочек</small><b>${today.length}</b><span>за день</span></div>
+        <div class="stat"><small>Последняя</small><b>${last ? hhmm(last.start) : '—'}</b><span>${last ? ago(last.start) : '&nbsp;'}</span></div></div>
+      <button class="btn primary big-add" data-act="add-bottle">${I.plus} Записать бутылочку</button></section>`;
+    const days = lastDays(7).map(t => ({ t, total: sum(S.events.filter(e => e.type === 'bottle' && startOfDay(e.start) === t), e => +e.ml) }));
+    out += `<section class="card"><h3>Смесь за неделю, мл</h3>${bars(days, v => v, 'feedbars')}</section>`;
+    out += history(S.events.filter(isFeed), 'Пока нет записей о кормлениях');
+    return out;
+  },
+
+  solid() {
+    const prods = allProducts();
+    const states = prods.map(p => ({ p, s: productState(p) }));
+    const done = states.filter(x => x.s.done).length;
+    const now = states.filter(x => x.s.start && !x.s.done);
+    let out = `<section class="card"><h3>Введено ${done} из ${prods.length}</h3><div class="progress"><i style="width:${done / prods.length * 100}%"></i></div>
+      ${now.length ? `<p class="hint" style="margin:12px 0 8px">Сейчас вводим:</p><div class="chips">${now.map(x => `<button class="chip" data-sp="${x.p.key}">${esc(x.p.name)}<small>&nbsp;· день ${daysSince(x.s.start)}</small></button>`).join('')}</div>` : ''}
+      <div class="actions-row" style="margin-top:12px"><button class="btn primary" data-act="add-solid">${I.plus} Записать прикорм</button></div></section>`;
+    out += `<details class="card tips"><summary>Как вводить новый продукт</summary><ul>
+      <li>Первый прикорм — обычно в 4–6 месяцев, когда малыш готов: уверенно держит голову, интересуется едой, не выталкивает ложку языком.</li>
+      <li>Один новый продукт за раз: начните с ½–1 чайной ложки и за 5–7 дней доведите до нужного объёма.</li>
+      <li>Новое давайте в первой половине дня, чтобы успеть заметить реакцию.</li>
+      <li>Сначала однокомпонентные пюре и каши, потом смешивайте уже знакомые продукты.</li>
+      <li>Не вводите новое во время болезни и в дни прививок.</li>
+      <li>Когда продукт съедается в нужном объёме без реакции — ставьте галочку «введён».</li></ul>
+      <p class="hint">Порядок и сроки — ориентир по рекомендациям российских педиатров. Обсудите схему с вашим педиатром.</p></details>`;
+    for (const gr of SOLID_GROUPS) {
+      const items = prods.filter(p => p.g === gr.g);
+      const dn = items.filter(p => productState(p).done).length;
+      out += `<section class="vgroup"><h3>${gr.title} · ${gr.from}<small>${dn}/${items.length}</small></h3>${gr.tip ? `<p class="note" style="margin:-4px 0 8px">${gr.tip}</p>` : ''}<div class="list">${items.map(productRow).join('')}</div></section>`;
+    }
+    const own = prods.filter(p => p.custom && !SOLID_GROUPS.some(gr => gr.g === p.g));
+    out += `<section class="vgroup"><h3>Свои продукты</h3>${own.length ? `<div class="list">${own.map(productRow).join('')}</div>` : ''}
+      <div class="actions-row" style="margin-top:10px"><button class="btn soft" data-act="add-product">${I.plus} Добавить продукт</button></div></section>`;
+    out += history(S.events.filter(e => e.type === 'solid'), 'Пока нет записей о прикорме');
+    return out;
   },
 
   growth() {
@@ -546,7 +660,7 @@ function bottleForm(e) {
     field('Время', `<input type="datetime-local" name="start" value="${dtl(v.start)}" required>`) +
     field('Объём, мл', `<input type="number" name="ml" inputmode="numeric" min="1" max="500" step="1" value="${esc(v.ml)}" required autofocus>`) +
     `<div class="chips">${[30, 60, 90, 120, 150, 180, 210].map(n => `<button type="button" class="chip" data-ml="${n}">${n}</button>`).join('')}</div>` +
-    group('Что в бутылочке', seg('kind', [['breastmilk', 'Грудное молоко'], ['formula', 'Смесь']], v.kind || 'formula')) +
+    group('Что в бутылочке', seg('kind', [['formula', 'Смесь'], ['breastmilk', 'Сцеженное молоко']], v.kind || 'formula')) +
     noteField(v.note),
     fd => {
       const start = parseDtl(fd.start); if (!start) return false;
@@ -554,39 +668,80 @@ function bottleForm(e) {
       toast(isNew ? 'Записано' : 'Изменения сохранены');
     }, { del: !isNew && (() => delEv(e.id)) });
 }
-function solidForm(e) {
-  const isNew = !e, v = e || { start: Date.now() };
-  const foods = foodSummary().map(f => f.name);
+function solidForm(e, preset = {}) {
+  const isNew = !e, v = e || { start: Date.now(), food: preset.food || '' };
+  const names = allProducts().map(p => p.name);
   openSheet('Прикорм',
     field('Время', `<input type="datetime-local" name="start" value="${dtl(v.start)}" required>`) +
-    field('Продукт', `<input name="food" list="foods" value="${esc(v.food)}" placeholder="например, кабачок" required autofocus maxlength="60"><datalist id="foods">${foods.map(f => `<option value="${esc(f)}">`).join('')}</datalist>`, foods.length ? '' : 'Новые продукты вводят по одному, начиная с малого количества') +
-    field('Сколько съел, г', `<input type="number" name="grams" inputmode="numeric" min="0" max="500" value="${esc(v.grams)}" placeholder="необязательно">`) +
+    field('Продукт', `<input name="food" list="foods" value="${esc(v.food)}" placeholder="например, кабачок" required maxlength="60" ${v.food ? '' : 'autofocus'}><datalist id="foods">${names.map(f => `<option value="${esc(f)}">`).join('')}</datalist>`, 'Выберите из списка или впишите свой — он появится во вкладке «Прикорм»') +
+    field('Сколько съел, г', `<input type="number" name="grams" inputmode="numeric" min="0" max="500" value="${esc(v.grams)}" placeholder="необязательно" ${v.food ? 'autofocus' : ''}>`) +
+    `<div class="chips">${[5, 10, 20, 30, 50, 80, 100].map(n => `<button type="button" class="chip" data-g="${n}">${n} г</button>`).join('')}</div>` +
     group('Реакция', seg('reaction', Object.entries(REACTIONS), v.reaction || '')) +
     noteField(v.note),
     fd => {
       const start = parseDtl(fd.start); if (!start) return false;
-      upsertEv(e, { type: 'solid', start, end: start, food: fd.food.trim(), grams: fd.grams ? Math.round(+fd.grams) : '', reaction: fd.reaction || '', note: fd.note.trim() });
+      const food = fd.food.trim();
+      let p = findProduct(food);
+      if (!p && food) { p = { key: 'c_' + uid(), name: food, g: 'own' }; S.solidsCustom.push(p); }
+      upsertEv(e, { type: 'solid', start, end: start, food, product: p ? p.key : '', grams: fd.grams ? Math.round(+fd.grams) : '', reaction: fd.reaction || '', note: fd.note.trim() });
+      if (p) { const st = S.solids[p.key] || {}; if (!st.start || st.start > dateStr(start)) S.solids[p.key] = { ...st, start: dateStr(start) }; }
       toast(isNew ? 'Записано' : 'Изменения сохранены');
     }, { del: !isNew && (() => delEv(e.id)) });
 }
-function breastForm(e) {
-  const isNew = !e, v = e || { start: Date.now() - 20 * MIN };
-  const mm = ms => (ms ? Math.round(ms / MIN) : '');
-  openSheet(isNew ? 'Кормление грудью' : 'Кормление грудью',
-    field('Начало', `<input type="datetime-local" name="start" value="${dtl(v.start)}" required>`) +
-    `<div class="two">${field('Левая, мин', `<input type="number" name="L" inputmode="numeric" min="0" max="180" value="${mm(v.L)}">`)}${field('Правая, мин', `<input type="number" name="R" inputmode="numeric" min="0" max="180" value="${mm(v.R)}">`)}</div>` +
-    noteField(v.note),
+function productForm(key) {
+  const p = allProducts().find(x => x.key === key); if (!p) return;
+  const s = productState(p), gr = SOLID_GROUPS.find(g => g.g === p.g), max = todayStr();
+  openSheet(p.name,
+    `<p class="muted">${gr ? gr.title + ' · ' + gr.from : 'Свой продукт'}${s.servings.length ? ' · порций: ' + s.servings.length : ''}</p>` +
+    `<div class="two">${field('Начали вводить', `<input type="date" name="start" value="${s.start}" max="${max}">`)}${field('Введён полностью', `<input type="date" name="done" value="${s.done}" max="${max}">`)}</div>` +
+    `<div class="actions-row"><button type="button" class="btn small" data-fill="start">Начали сегодня</button><button type="button" class="btn small" data-fill="done">${I.check} Введён сегодня</button></div>` +
+    field('Заметка', `<input name="note" value="${esc(s.note)}" placeholder="как ест, была ли реакция…" maxlength="200">`) +
+    (s.servings.length ? group('Последние порции', `<div class="list">${[...s.servings].reverse().slice(0, 7).map(e => evRow(e, true)).join('')}</div>`) : '') +
+    `<button type="button" class="btn soft solid" data-act="add-serving" data-key="${key}">${I.plus} Записать порцию</button>`,
     fd => {
-      const start = parseDtl(fd.start); const L = (+fd.L || 0) * MIN, R = (+fd.R || 0) * MIN;
-      if (!start) return false;
-      if (!L && !R) { toast('Укажите хотя бы одну сторону'); return false; }
-      upsertEv(e, { type: 'breast', start, end: start + L + R, L, R, last: e && e.last ? e.last : (R ? 'R' : 'L'), note: fd.note.trim() });
-      toast(isNew ? 'Записано' : 'Изменения сохранены');
-    }, { del: !isNew && (() => delEv(e.id)) });
+      const st = { start: fd.start, done: fd.done, note: fd.note.trim() };
+      if (st.done && !st.start) st.start = st.done;
+      if (st.done && st.start > st.done) { toast('Дата «введён» раньше начала'); return false; }
+      if (!st.start && !st.done && !st.note) delete S.solids[key]; else S.solids[key] = st;
+      toast('Сохранено');
+    }, { del: p.custom && (() => { if (!confirm('Убрать продукт из списка? Записи о порциях останутся.')) return false; S.solidsCustom = S.solidsCustom.filter(c => c.key !== key); delete S.solids[key]; }), delLabel: 'Убрать' });
 }
-function sleepForm(e) {
-  const isNew = !e, now = Date.now(), v = e || { start: now - HOUR, end: now };
-  openSheet('Сон',
+function addProductForm() {
+  openSheet('Новый продукт',
+    field('Название', `<input name="name" required maxlength="60" placeholder="например, кролик с кабачком" autofocus>`) +
+    field('Группа', `<select name="g"><option value="own">Свои продукты</option>${SOLID_GROUPS.map(g => `<option value="${g.g}">${g.title}</option>`).join('')}</select>`),
+    fd => {
+      const name = fd.name.trim(); if (!name) return false;
+      if (findProduct(name)) { toast('Такой продукт уже есть в списке'); return false; }
+      S.solidsCustom.push({ key: 'c_' + uid(), name, g: fd.g });
+      toast('Продукт добавлен');
+    });
+}
+function toggleProduct(key) {
+  const p = allProducts().find(x => x.key === key); if (!p) return;
+  const s = productState(p), st = { ...(S.solids[key] || {}) };
+  if (s.done) { st.done = ''; st.start = st.start || s.start; toast('Отметка снята'); }
+  else { st.done = todayStr(); st.start = st.start || s.start || todayStr(); toast(p.name + ' — введён ✓'); }
+  S.solids[key] = st; save(); render();
+}
+function sleepForm(e, preset = {}) {
+  const isNew = !e;
+  let v = e;
+  if (!v) {
+    const D = preset.d || todayStr(), kind = preset.kind || autoKind(Date.now()), now = Date.now();
+    if (kind === 'night') {
+      const s = parseDate(D); s.setDate(s.getDate() - 1); s.setHours(21, 0, 0, 0);
+      const en = parseDate(D); en.setHours(7, 0, 0, 0);
+      v = { start: Math.min(s.getTime(), now - HOUR), end: Math.min(en.getTime(), now), kind };
+    } else {
+      const s = parseDate(D); s.setHours(13, 0, 0, 0);
+      let st = s.getTime(), en = st + 90 * MIN;
+      if (en > now) { en = now; st = now - HOUR; }
+      v = { start: st, end: en, kind };
+    }
+  }
+  openSheet(isNew ? (v.kind === 'night' ? 'Ночной сон' : 'Дневной сон') : 'Сон',
+    group('Тип сна', seg('kind', [['day', 'Дневной'], ['night', 'Ночной']], sleepKind(v))) +
     field('Уснул', `<input type="datetime-local" name="start" value="${dtl(v.start)}" required>`) +
     field('Проснулся', `<input type="datetime-local" name="end" value="${dtl(v.end)}" required>`) +
     noteField(v.note),
@@ -594,9 +749,9 @@ function sleepForm(e) {
       const start = parseDtl(fd.start), end = parseDtl(fd.end);
       if (!start || !end) return false;
       if (end <= start) { toast('Время пробуждения должно быть позже'); return false; }
-      if (end - start > 24 * HOUR) { toast('Сон дольше суток — проверьте даты'); return false; }
-      upsertEv(e, { type: 'sleep', start, end, note: fd.note.trim() });
-      toast(isNew ? 'Записано' : 'Изменения сохранены');
+      if (end - start > 16 * HOUR) { toast('Сон дольше 16 часов — проверьте даты'); return false; }
+      upsertEv(e, { type: 'sleep', start, end, kind: fd.kind, note: fd.note.trim() });
+      toast(isNew ? 'Сон записан' : 'Изменения сохранены');
     }, { del: !isNew && (() => delEv(e.id)) });
 }
 function growthForm(x) {
@@ -702,31 +857,13 @@ function importData() {
 }
 
 /* ---------------- Действия ---------------- */
-function breastSide(sd) {
-  const now = Date.now(); const b = S.timers.breast;
-  if (!b) S.timers.breast = { start: now, side: sd, segStart: now, L: 0, R: 0, lastSide: sd };
-  else {
-    if (b.side) b[b.side] += now - b.segStart;
-    if (b.side === sd) b.side = null;
-    else { b.side = sd; b.segStart = now; b.lastSide = sd; }
-  }
-  save(); render();
-}
-function breastStop() {
-  const b = S.timers.breast; if (!b) return;
-  const now = Date.now(); if (b.side) b[b.side] += now - b.segStart;
-  delete S.timers.breast;
-  if (b.L + b.R < 5000) toast('Слишком коротко — не сохранено');
-  else { S.events.push({ id: uid(), type: 'breast', start: b.start, end: now, L: Math.round(b.L), R: Math.round(b.R), last: b.lastSide }); toast('Кормление сохранено · ' + dur(b.L + b.R)); }
-  save(); render();
-}
 function sleepToggle() {
   const now = Date.now();
   if (S.timers.sleep) {
-    const st = S.timers.sleep.start; delete S.timers.sleep;
-    if (now - st < MIN) toast('Меньше минуты — не сохранено');
-    else { S.events.push({ id: uid(), type: 'sleep', start: st, end: now }); toast('Сон записан · ' + dur(now - st)); }
-  } else { S.timers.sleep = { start: now }; toast('Сладких снов 🌙'); }
+    const t = S.timers.sleep; delete S.timers.sleep;
+    if (now - t.start < MIN) toast('Меньше минуты — не сохранено');
+    else { S.events.push({ id: uid(), type: 'sleep', start: t.start, end: now, kind: t.kind || autoKind(t.start) }); toast('Сон записан · ' + dur(now - t.start)); }
+  } else { S.timers.sleep = { start: now, kind: autoKind(now) }; toast('Сладких снов 🌙'); }
   save(); render();
 }
 function markPast() {
@@ -737,21 +874,27 @@ function markPast() {
 }
 
 const ACTIONS = {
-  'breast-L': () => breastSide('L'), 'breast-R': () => breastSide('R'), 'breast-stop': breastStop,
-  'breast-cancel': () => { if (confirm('Отменить кормление без сохранения?')) { delete S.timers.breast; save(); render(); } },
   'sleep-toggle': sleepToggle,
   'sleep-cancel': () => { if (confirm('Отменить сон без сохранения?')) { delete S.timers.sleep; save(); render(); } },
-  'add-bottle': () => bottleForm(), 'add-solid': () => solidForm(), 'add-breast': () => breastForm(), 'add-sleep': () => sleepForm(),
-  'add-growth': () => growthForm(), 'add-custom': () => customForm(), 'mark-past': markPast,
+  'add-sleep': t => sleepForm(null, { d: t.dataset.d, kind: t.dataset.kind }),
+  'add-bottle': () => bottleForm(), 'add-solid': () => solidForm(), 'add-growth': () => growthForm(),
+  'add-serving': t => { const p = allProducts().find(x => x.key === t.dataset.key); solidForm(null, { food: p ? p.name : '' }); },
+  'add-product': () => addProductForm(),
+  'add-custom': () => customForm(), 'mark-past': markPast,
   settings: settingsForm, whatsnew: whatsNew,
 };
-const FORMS = { bottle: bottleForm, solid: solidForm, breast: breastForm, sleep: sleepForm };
+const FORMS = { bottle: bottleForm, solid: solidForm, sleep: sleepForm };
 
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-act],[data-ev],[data-gr],[data-vk],[data-ck],[data-metric],[data-tab],[data-close],[data-del],[data-ml],[data-x]');
+  const t = e.target.closest('[data-act],[data-ev],[data-gr],[data-vk],[data-ck],[data-sp],[data-spc],[data-day],[data-metric],[data-tab],[data-close],[data-del],[data-ml],[data-g],[data-fill],[data-x]');
   if (!t) return;
   const d = t.dataset;
-  if (d.act && ACTIONS[d.act]) return ACTIONS[d.act]();
+  if (d.act && ACTIONS[d.act]) return ACTIONS[d.act](t);
+  if (d.spc) return toggleProduct(d.spc);
+  if (d.sp) return productForm(d.sp);
+  if (d.day) { const n = dateStr(addDays(parseDate(sleepDay).getTime(), +d.day)); sleepDay = n > todayStr() ? todayStr() : n; return render(); }
+  if (d.fill) { const f = dlg.querySelector(`[name=${d.fill}]`); if (f) f.value = todayStr(); if (d.fill === 'done') { const st = dlg.querySelector('[name=start]'); if (st && !st.value) st.value = todayStr(); } return; }
+  if (d.g) { const f = dlg.querySelector('[name=grams]'); if (f) f.value = d.g; return; }
   if (d.ev) { const ev = S.events.find(x => x.id === d.ev); return ev && FORMS[ev.type] && FORMS[ev.type](ev); }
   if (d.gr) { const g = S.growth.find(x => x.id === d.gr); return g && growthForm(g); }
   if (d.vk) return vaccForm(d.vk);
@@ -784,6 +927,10 @@ document.addEventListener('click', e => {
   }
 });
 
+document.addEventListener('change', e => {
+  if (e.target.id === 'sleep-date' && e.target.value) { sleepDay = e.target.value > todayStr() ? todayStr() : e.target.value; render(); }
+});
+
 /* ---------------- Уведомления ---------------- */
 let toastT;
 function toast(msg) {
@@ -792,7 +939,7 @@ function toast(msg) {
 }
 
 /* ---------------- Запуск ---------------- */
-window.addEventListener('hashchange', () => { tab = location.hash.slice(1) || 'today'; render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { tab = location.hash.slice(1) || 'today'; if (tab === 'sleep') sleepDay = todayStr(); render(); window.scrollTo(0, 0); });
 window.addEventListener('storage', e => { if (e.key === KEY) { S = load(); if (!dlg.open) render(); } });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { S = load(); if (!dlg.open) render(); checkUpdate(false); } });
 setInterval(tick, 1000);
