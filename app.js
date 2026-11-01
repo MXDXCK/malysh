@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.7.3';
+const APP_VERSION = '1.7.4';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -84,7 +84,10 @@ window.App = {
   applyChanges(changes) {
     nightCache = null; gapCache = null;
     const f = flatten(S);
-    for (const [id, v] of Object.entries(changes)) { if (v == null) delete f[id]; else f[id] = v; }
+    for (const [id, v] of Object.entries(changes)) {
+      if (v == null && id === 'profile') continue; // профиль малыша через синхронизацию не удаляется никогда
+      if (v == null) delete f[id]; else f[id] = v;
+    }
     S = unflatten(f);
     try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* */ }
     if (dlg.open) { renderPending = true; refreshSettingsFields(); } else render();

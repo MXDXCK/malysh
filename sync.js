@@ -116,8 +116,12 @@ function listen() {
       ready = true;
       if (full) firstFull(snap.docs); else applyDocs(snap.docs);
     } else {
-      // removed — запись стёрта из облака насовсем (так удаляли версии до 1.5.0)
-      applyDocs(snap.docChanges().map(ch => (ch.type === 'removed' ? { removed: ch.doc } : ch.doc)));
+      // «removed» — НЕ всегда удаление! Пока наша правка не подтверждена облаком, у неё нет времени сервера,
+      // и Firestore временно исключает документ из запроса «изменения после…». Это не удаление — пропускаем.
+      // Настоящее удаление (с версии 1.5.0) — пометка del: true. «removed» как удаление учитываем только
+      // в полной подписке и только для подтверждённых документов (так удаляли версии до 1.5.0).
+      const changes = snap.docChanges().filter(ch => ch.type !== 'removed' || (full && !(ch.doc.metadata && ch.doc.metadata.hasPendingWrites)));
+      applyDocs(changes.map(ch => (ch.type === 'removed' ? { removed: ch.doc } : ch.doc)));
     }
     if (!snap.metadata.fromCache) { Sync.lastSync = Date.now(); if (st) { st.lastSync = Sync.lastSync; saveState(); } }
     setStatus(snap.metadata.fromCache ? 'offline' : 'on');
@@ -161,6 +165,7 @@ function applyDocs(docs) {
   docs.forEach(d => {
     const r = readDoc(d); if (!r) return;
     if (r.t > st.cursor) st.cursor = r.t;
+    if (inflight[r.id] !== undefined) return; // наша правка этой записи ещё в пути — не даём «эху» старой версии её перетереть
     const h = r.v == null ? null : hash(r.v);
     if (h === (st.known[r.id] || null)) return; // уже знаем (часто — эхо нашей же записи)
     if (r.v == null) delete st.known[r.id]; else st.known[r.id] = h;
