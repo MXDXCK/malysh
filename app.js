@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -165,6 +165,7 @@ const I = {
   check: svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>'),
   refresh: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
   sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  drop: svg('<path d="M12 3.5c3 3.6 6 7.2 6 10.5a6 6 0 0 1-12 0c0-3.3 3-6.9 6-10.5z"/>'),
   chevL: svg('<path d="m15 18-6-6 6-6"/>'),
   chevR: svg('<path d="m9 18 6-6-6-6"/>'),
 };
@@ -288,7 +289,7 @@ function whatsNew() {
 /* ---------------- Рендер ---------------- */
 let tab = location.hash.slice(1) || 'today';
 let metric = 'weight';
-const TABS = [['today', 'Сегодня', I.home], ['sleep', 'Сон', I.moon], ['feed', 'Кормление', I.bottle], ['solid', 'Прикорм', I.bowl], ['growth', 'Рост', I.chart], ['vacc', 'Прививки', I.shield]];
+const TABS = [['today', 'Сегодня', I.home], ['sleep', 'Сон', I.moon], ['feed', 'Смесь', I.bottle], ['solid', 'Прикорм', I.bowl], ['stool', 'Стул', I.drop], ['growth', 'Рост', I.chart], ['vacc', 'Прививки', I.shield]];
 
 function applyTheme() {
   const t = S.profile.theme;
@@ -413,6 +414,7 @@ function meta(e) {
     case 'breast': return { cls: 'feed', icon: I.heart, title: 'Грудь · ' + dur(breastMs(e)), sub: 'запись из прошлой версии' + note };
     case 'bottle': return { cls: 'feed', icon: I.bottle, title: 'Бутылочка · ' + (e.ml || 0) + ' мл', sub: (e.kind === 'breastmilk' ? 'Сцеженное молоко' : 'Смесь') + note };
     case 'solid': return { cls: 'solid', icon: I.bowl, title: esc(e.food || 'Прикорм') + (e.grams ? ' · ' + e.grams + ' г' : ''), sub: 'Прикорм' + (e.reaction ? ' · реакция: ' + REACTIONS[e.reaction].toLowerCase() : '') + note };
+    case 'stool': return { cls: 'stool' + (stoolWarn(e) ? ' warn' : ''), icon: stoolSwatch(e.color), title: 'Стул · ' + (lbl(STOOL_COLORS, e.color) || 'без цвета').toLowerCase(), sub: (stoolDesc(e) || '&nbsp;') + note };
     case 'sleep': return { cls: 'sleep', icon: sleepKind(e) === 'night' ? I.moon : I.sun, title: (sleepKind(e) === 'night' ? 'Ночной сон · ' : 'Дневной сон · ') + dur(e.end - e.start), sub: hhmm(e.start) + ' – ' + hhmm(e.end) + (dayKey(e.start) !== dayKey(e.end) ? ' (след. день)' : '') + note };
   }
   return { cls: '', icon: '', title: '', sub: '' };
@@ -425,7 +427,8 @@ function daySummary(items) {
   const f = items.filter(isFeed).length, ml = sum(items.filter(e => e.type === 'bottle'), e => +e.ml);
   const sl = sum(items.filter(e => e.type === 'sleep'), e => e.end - e.start);
   const so = items.filter(e => e.type === 'solid').length;
-  return [f ? f + ' ' + pl(f, ['кормление', 'кормления', 'кормлений']) : '', ml ? ml + ' мл' : '', so ? 'прикорм ' + so : '', sl ? 'сон ' + dur(sl) : ''].filter(Boolean).join(' · ');
+  const st = items.filter(isStool).length;
+  return [f ? f + ' ' + pl(f, ['кормление', 'кормления', 'кормлений']) : '', ml ? ml + ' мл' : '', so ? 'прикорм ' + so : '', st ? 'стул ' + st + ' ' + pl(st, ['раз', 'раза', 'раз']) : '', sl ? 'сон ' + dur(sl) : ''].filter(Boolean).join(' · ');
 }
 function history(list, emptyText, limit = 30) {
   if (!list.length) return `<p class="empty">${emptyText}</p>`;
@@ -440,6 +443,71 @@ function bars(days, fmtV, cls = '') {
 }
 const lastDays = n => { const t = startOfDay(Date.now()), l = []; for (let i = n - 1; i >= 0; i--) l.push(startOfDay(addDays(t, -i))); return l; };
 
+/* ---- Стул ---- */
+// warn: цвета, которые стоит показать педиатру
+const STOOL_COLORS = [
+  ['yellow', 'Жёлтый', '#E3BC3A'], ['mustard', 'Горчичный', '#B8932A'], ['orange', 'Оранжевый', '#DE8435'],
+  ['brown', 'Коричневый', '#875A30'], ['green', 'Зелёный', '#6E8C38'], ['darkgreen', 'Тёмно-зелёный', '#3F5A2A'],
+  ['black', 'Чёрный', '#2A2420', true], ['red', 'С кровью / красный', '#C0392B', true], ['white', 'Белый / серый', '#D8D3CB', true],
+];
+const STOOL_CONS = [['watery', 'Водянистый'], ['liquid', 'Жидкий'], ['mushy', 'Кашицей'], ['soft', 'Мягкий'], ['formed', 'Оформленный'], ['hard', 'Твёрдый, комочки']];
+const STOOL_AMOUNT = [['small', 'Мало'], ['medium', 'Средне'], ['large', 'Много']];
+const STOOL_EXTRA = [['mucus', 'Слизь'], ['foam', 'Пена'], ['undigested', 'Непереваренные кусочки'], ['blood', 'Прожилки крови'], ['strain', 'Тужился, плакал']];
+const lbl = (list, k) => { const x = list.find(i => i[0] === k); return x ? x[1] : ''; };
+const stoolColor = k => STOOL_COLORS.find(c => c[0] === k);
+const stoolWarn = e => { const c = stoolColor(e.color); return !!((c && c[3]) || (e.extra || []).includes('blood')); };
+const isStool = e => e.type === 'stool';
+function stoolSwatch(k) { const c = stoolColor(k); return `<i class="sw" style="background:${c ? c[2] : 'var(--line)'}"></i>`; }
+function stoolDesc(e) {
+  return [lbl(STOOL_CONS, e.cons).toLowerCase(), lbl(STOOL_AMOUNT, e.amount).toLowerCase(), ...(e.extra || []).map(x => lbl(STOOL_EXTRA, x).toLowerCase())].filter(Boolean).join(' · ');
+}
+
+function stoolForm(e) {
+  const isNew = !e;
+  const last = latest(S.events.filter(isStool));
+  const v = e || { start: Date.now(), color: last ? last.color : 'yellow', cons: last ? last.cons : 'mushy', amount: 'medium', extra: [] };
+  const ex = v.extra || [];
+  openSheet('Стул',
+    field('Время', `<input type="datetime-local" name="start" value="${dtl(v.start)}" required>`) +
+    group('Цвет', `<div class="seg colors">${STOOL_COLORS.map(([k, l, c]) => `<label><input type="radio" name="color" value="${k}" ${k === v.color ? 'checked' : ''}><span><i class="sw" style="background:${c}"></i>${l}</span></label>`).join('')}</div>`) +
+    group('Консистенция', seg('cons', STOOL_CONS, v.cons)) +
+    group('Количество', seg('amount', STOOL_AMOUNT, v.amount)) +
+    group('Особенности', `<div class="seg multi">${STOOL_EXTRA.map(([k, l]) => `<label><input type="checkbox" name="x_${k}" ${ex.includes(k) ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>`) +
+    noteField(v.note),
+    fd => {
+      const start = parseDtl(fd.start); if (!start) return false;
+      const extra = STOOL_EXTRA.map(x => x[0]).filter(k => fd['x_' + k]);
+      const rec = { type: 'stool', start, end: start, color: fd.color || '', cons: fd.cons || '', amount: fd.amount || '', extra, note: fd.note.trim() };
+      upsertEv(e, rec);
+      toast(stoolWarn(rec) ? 'Записано. Такой стул лучше показать педиатру' : (isNew ? 'Записано' : 'Изменения сохранены'));
+    }, { del: !isNew && (() => delEv(e.id)) });
+}
+
+function stoolView() {
+  const now = Date.now(), t0 = startOfDay(now);
+  const all = S.events.filter(isStool);
+  const today = all.filter(e => e.start >= t0);
+  const last = latest(all);
+  const days = lastDays(7).map(t => ({ t, total: all.filter(e => startOfDay(e.start) === t).length }));
+  const prev = days.slice(0, 6).filter(d => d.total);
+  const avg = prev.length ? (sum(prev, d => d.total) / 6) : 0;
+  const recentWarn = all.filter(e => e.start > now - 3 * DAY && stoolWarn(e)).sort((a, b) => b.start - a.start);
+  let out = `<section class="card"><div class="stats" style="grid-template-columns:1fr 1fr">
+      <div class="stat stool"><small>Сегодня</small><b>${today.length}</b><span>${pl(today.length, ['раз', 'раза', 'раз'])}</span></div>
+      <div class="stat"><small>Последний</small><b>${last ? hhmm(last.start) : '—'}</b><span>${last ? (dayKey(last.start) === todayStr() ? ago(last.start) : fmtShort.format(last.start) + ' · ' + ago(last.start)) : '&nbsp;'}</span></div></div>
+    <button class="btn primary big-add stool-btn" data-act="add-stool">${I.plus} Записать стул</button></section>`;
+  if (recentWarn.length) out += `<section class="card warn-card"><b>Стоит показать педиатру</b><p>${recentWarn.length === 1 ? 'Был стул' : 'За последние 3 дня было ' + recentWarn.length + ' раза'} с цветом или примесью, о которых лучше сказать врачу: ${[...new Set(recentWarn.map(e => (stoolColor(e.color) && stoolColor(e.color)[3]) ? stoolColor(e.color)[1].toLowerCase() : 'прожилки крови'))].join(', ')}. Если малыш вялый, отказывается от еды или у него температура — обратитесь к врачу сразу. Удобно сфотографировать подгузник.</p></section>`;
+  out += `<section class="card"><h3>Стул за неделю</h3>${avg ? `<p class="hint">В среднем ${avg.toFixed(1).replace('.', ',').replace(',0', '')} раза в день</p>` : ''}${bars(days, v => v, 'stoolbars')}</section>`;
+  // Сводка по цветам за 7 дней
+  const week = all.filter(e => e.start >= startOfDay(addDays(now, -6)));
+  if (week.length) {
+    const byColor = STOOL_COLORS.map(([k, l]) => [k, l, week.filter(e => e.color === k).length]).filter(x => x[2]);
+    out += `<section class="card"><h3>Цвет за неделю</h3><div class="chips">${byColor.map(([k, l, n]) => `<span class="chip plain">${stoolSwatch(k)}${l} · ${n}</span>`).join('')}</div></section>`;
+  }
+  out += history(all, 'Пока нет записей о стуле');
+  return out;
+}
+
 /* ---- Экраны ---- */
 let sleepDay = todayStr();
 const VIEWS = {
@@ -449,6 +517,7 @@ const VIEWS = {
     const bottles = ev.filter(isFeed);
     const ml = sum(ev.filter(e => e.type === 'bottle'), e => +e.ml);
     const lastFeed = latest(S.events.filter(isFeed));
+    const stoolsToday = ev.filter(isStool), lastStool = latest(S.events.filter(isStool));
     let out = updateBanner() + installHint();
     out += `<section class="hero"><small>${fmtDay.format(now)}</small><h2>${partOfDay(h)}${S.profile.name ? ', ' + esc(S.profile.name) : ''}!</h2></section>`;
     if (!S.profile.birth) out += `<section class="card hello"><h3>Добро пожаловать! 👋</h3><p>Укажите имя и дату рождения малыша — приложение посчитает возраст и составит календарь прививок.</p><button class="btn primary" data-act="settings">Заполнить профиль</button></section>`;
@@ -463,18 +532,21 @@ const VIEWS = {
     out += `<section class="quick">
       <button class="q feed" data-act="add-bottle">${I.bottle}<span>Бутылочка</span></button>
       <button class="q solid" data-act="add-solid">${I.bowl}<span>Прикорм</span></button>
+      <button class="q stool" data-act="add-stool">${I.drop}<span>Стул</span></button>
       <button class="q growth" data-act="add-growth">${I.chart}<span>Рост и вес</span></button>
     </section>`;
     out += `<section class="stats">
       <div class="stat feed"><small>Бутылочек сегодня</small><b>${bottles.length}</b><span>${ml ? ml + ' мл всего' : 'пока не было'}</span></div>
       <div class="stat"><small>Последнее кормление</small><b>${lastFeed ? hhmm(lastFeed.start) : '—'}</b><span>${lastFeed ? ago(lastFeed.start) : '&nbsp;'}</span></div>
+      <button class="stat stool" data-tab="stool"><small>Стул сегодня</small><b>${stoolsToday.length} ${pl(stoolsToday.length, ['раз', 'раза', 'раз'])}</b><span>${lastStool ? 'последний ' + (dayKey(lastStool.start) === D ? 'в ' + hhmm(lastStool.start) : fmtShort.format(lastStool.start)) : 'пока не было'}</span></button>
+      ${lastStool && stoolWarn(lastStool) && lastStool.start > now - 3 * DAY ? `<button class="stat warn-stat" data-tab="stool"><small>Стул</small><b>⚠︎</b><span>был необычный — посмотрите</span></button>` : ''}
     </section>`;
     if (S.profile.birth) {
       const next = schedule().filter(v => !v.done).sort((a, b) => a.due - b.due)[0];
       if (next) out += `<section class="list"><button class="row" data-tab="vacc"><span class="dot vacc">${I.shield}</span><span class="row-main"><b>${esc(next.n)}</b><small>Ближайшая прививка · ${fmtLong.format(next.due)}</small></span>${next.st[1] ? `<span class="pill ${next.st[0]}">${next.st[1]}</span>` : ''}</button></section>`;
     }
     const other = ev.filter(e => e.type !== 'sleep');
-    if (other.length) out += `<section class="day"><h3>Кормления и прикорм сегодня</h3><div class="list">${[...other].sort((a, b) => b.start - a.start).map(evRow).join('')}</div></section>`;
+    if (other.length) out += `<section class="day"><h3>Кормления, прикорм и стул сегодня</h3><div class="list">${[...other].sort((a, b) => b.start - a.start).map(evRow).join('')}</div></section>`;
     return out;
   },
 
@@ -538,6 +610,8 @@ const VIEWS = {
     out += history(S.events.filter(e => e.type === 'solid'), 'Пока нет записей о прикорме');
     return out;
   },
+
+  stool: stoolView,
 
   growth() {
     const g = [...S.growth].sort((a, b) => a.date.localeCompare(b.date));
@@ -893,10 +967,11 @@ const ACTIONS = {
   'add-bottle': () => bottleForm(), 'add-solid': () => solidForm(), 'add-growth': () => growthForm(),
   'add-serving': t => { const p = allProducts().find(x => x.key === t.dataset.key); solidForm(null, { food: p ? p.name : '' }); },
   'add-product': () => addProductForm(),
+  'add-stool': () => stoolForm(),
   'add-custom': () => customForm(), 'mark-past': markPast,
   settings: settingsForm, whatsnew: whatsNew,
 };
-const FORMS = { bottle: bottleForm, solid: solidForm, sleep: sleepForm };
+const FORMS = { bottle: bottleForm, solid: solidForm, sleep: sleepForm, stool: stoolForm };
 
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-act],[data-ev],[data-gr],[data-vk],[data-ck],[data-sp],[data-spc],[data-day],[data-metric],[data-tab],[data-close],[data-del],[data-ml],[data-g],[data-fill],[data-x]');
