@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -36,7 +36,7 @@ function load() {
 }
 let S = load();
 function save() {
-  nightCache = null;
+  nightCache = null; gapCache = null;
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Не получилось сохранить данные'); }
   if (window.Sync) window.Sync.push();
 }
@@ -82,7 +82,7 @@ window.App = {
   },
   // Порция изменений из облака: { id: значение | null (удалено) }
   applyChanges(changes) {
-    nightCache = null;
+    nightCache = null; gapCache = null;
     const f = flatten(S);
     for (const [id, v] of Object.entries(changes)) { if (v == null) delete f[id]; else f[id] = v; }
     S = unflatten(f);
@@ -117,7 +117,7 @@ function dur(ms) {
 function clock(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
-  return (h ? h + ':' + pad(m) : m) + ':' + pad(x);
+  return h + ':' + pad(m) + ':' + pad(x); // всегда ч:мм:сс — «0:25:00», чтобы 25 минут не путали с 25 часами
 }
 function ago(ts) { const ms = Date.now() - ts; return ms < MIN ? 'только что' : dur(ms) + ' назад'; }
 function dateStr(d) { d = new Date(d); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
@@ -349,7 +349,7 @@ function tabbar() {
 }
 let resetScroll = false;
 function render() {
-  nightCache = null;
+  nightCache = null; gapCache = null;
   applyTheme();
   if (!VIEWS[tab]) tab = 'today';
   const old = $('#scroller'), y = old ? old.scrollTop : 0;
@@ -373,7 +373,7 @@ const minOfDay = ts => { const d = new Date(ts); return d.getHours() * 60 + d.ge
 const fmtMin = m => { m = ((Math.round(m) % 1440) + 1440) % 1440; return pad(Math.floor(m / 60)) + ':' + pad(m % 60); };
 const parseHM = (str, def) => { const [h, m] = String(str || '').split(':').map(Number); return Number.isFinite(h) ? h * 60 + (m || 0) : def; };
 const kindByHour = e => e.kind || ((h => (h >= 19 || h < 6) ? 'night' : 'day')(new Date(e.start).getHours()));
-let nightCache = null;
+let nightCache = null, gapCache = null;
 function nightSchedule() {
   if (nightCache) return nightCache;
   const cfg = S.profile.sleepCfg || {};
@@ -425,8 +425,37 @@ function sleepsFor(D) {
 }
 const sleepDur = l => sum(l, e => e.end - e.start);
 function durS(ms) { const m = Math.round(ms / MIN); if (m < 60) return m + ' мин'; return Math.floor(m / 60) + ' ч' + (m % 60 ? ' ' + m % 60 + ' м' : ''); }
+// Бодрствование перед каждым сном: от конца предыдущего сна до начала этого
+function wakeGaps() {
+  if (gapCache) return gapCache;
+  const map = {}, sl = S.events.filter(e => e.type === 'sleep').sort((a, b) => a.start - b.start);
+  const t = S.timers.sleep;
+  if (t) sl.push({ id: 'live', start: t.start, end: Date.now(), kind: t.kind || autoKind(t.start) });
+  const ranges = S.profile.birth ? { first: wakeRange('first'), middle: wakeRange('middle'), last: wakeRange('last') } : {};
+  let prev = null;
+  sl.forEach(e => {
+    if (prev) {
+      const min = (e.start - prev.end) / MIN;
+      if (min >= 5 && min <= 8 * 60) {
+        const pn = sleepKind(prev) === 'night', en = sleepKind(e) === 'night';
+        const type = pn && en ? 'nightwake' : pn ? 'first' : en ? 'last' : 'middle';
+        const r = ranges[type];
+        const cls = !r ? '' : min < r[0] - 10 ? 'short' : min > r[1] + 10 ? 'long' : 'ok';
+        map[e.id] = { min, type, cls };
+      }
+    }
+    if (!prev || e.end > prev.end) prev = e;
+  });
+  gapCache = map;
+  return map;
+}
+const wkTitle = { short: 'меньше обычного', long: 'дольше обычного — мог перегулять', ok: 'в норме' };
+function wakePill(e) {
+  const g = wakeGaps()[e.id]; if (!g) return '';
+  return `<i class="wk ${g.cls}">☀ ${hm(g.min)}</i>`;
+}
 function sleepTile(e, label) {
-  const inner = `<small>${label}</small><b>${e.live ? `<span data-since="${e.start}"></span>` : durS(e.end - e.start)}</b><span>${hhmm(e.start)} – ${e.live ? 'спит' : hhmm(e.end)}</span>`;
+  const inner = `${wakePill(e)}<small>${label}</small><b>${e.live ? `<span data-since="${e.start}"></span>` : durS(e.end - e.start)}</b><span>${hhmm(e.start)} – ${e.live ? 'спит' : hhmm(e.end)}</span>`;
   return e.live ? `<div class="tile ${sleepKind(e)} live">${inner}</div>` : `<button class="tile ${sleepKind(e)}" data-ev="${e.id}">${inner}</button>`;
 }
 const fmtDM = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' });
@@ -438,7 +467,8 @@ function sleepBlocks(D, nightD = D, nightTitle) {
   return `<div class="sp-head night"><h4>${I.moon}${nt}</h4><span>${n.length ? dur(sleepDur(n)) + wakes : ''}</span></div>
     <div class="tiles">${n.map((e, i) => sleepTile(e, n.length > 1 ? 'Часть ' + (i + 1) : 'Ночной сон')).join('')}<button class="tile add night" data-act="add-sleep" data-kind="night" data-d="${nightD}">${I.plus}<span>Ночь</span></button></div>
     <div class="sp-head day"><h4>${I.sun}Дневной сон</h4><span>${d.length ? d.length + ' ' + pl(d.length, ['раз', 'раза', 'раз']) + ' · ' + dur(sleepDur(d)) : ''}</span></div>
-    <div class="tiles">${d.map((e, i) => sleepTile(e, 'Сон ' + (i + 1))).join('')}<button class="tile add day" data-act="add-sleep" data-kind="day" data-d="${D}">${I.plus}<span>Дневной</span></button></div>`;
+    <div class="tiles">${d.map((e, i) => sleepTile(e, 'Сон ' + (i + 1))).join('')}<button class="tile add day" data-act="add-sleep" data-kind="day" data-d="${D}">${I.plus}<span>Дневной</span></button></div>
+    ${[...n, ...d].some(e => wakeGaps()[e.id]) ? `<p class="wk-legend"><i class="wk ok">☀ 1:45</i> бодрствовал перед сном · <i class="wk long">☀</i> дольше обычного · <i class="wk short">☀</i> меньше</p>` : ''}`;
 }
 function sleepButton() {
   const t = S.timers.sleep;
@@ -715,7 +745,7 @@ function meta(e) {
     case 'bottle': return { cls: 'feed', icon: I.bottle, title: 'Бутылочка · ' + (e.ml || 0) + ' мл', sub: (e.kind === 'breastmilk' ? 'Сцеженное молоко' : 'Смесь') + note };
     case 'solid': return { cls: 'solid', icon: I.bowl, title: esc(e.food || 'Прикорм') + (e.grams ? ' · ' + e.grams + ' г' : ''), sub: 'Прикорм' + (e.reaction ? ' · реакция: ' + REACTIONS[e.reaction].toLowerCase() : '') + note };
     case 'stool': return { cls: 'stool' + (stoolWarn(e) ? ' warn' : ''), icon: stoolSwatch(e.color), title: 'Стул · ' + (lbl(STOOL_COLORS, e.color) || 'без цвета').toLowerCase(), sub: (stoolDesc(e) || '&nbsp;') + note };
-    case 'sleep': return { cls: 'sleep', icon: sleepKind(e) === 'night' ? I.moon : I.sun, title: (sleepKind(e) === 'night' ? 'Ночной сон · ' : 'Дневной сон · ') + dur(e.end - e.start), sub: hhmm(e.start) + ' – ' + hhmm(e.end) + (dayKey(e.start) !== dayKey(e.end) ? ' (след. день)' : '') + note };
+    case 'sleep': return { cls: 'sleep', icon: sleepKind(e) === 'night' ? I.moon : I.sun, title: (sleepKind(e) === 'night' ? 'Ночной сон · ' : 'Дневной сон · ') + dur(e.end - e.start), sub: hhmm(e.start) + ' – ' + hhmm(e.end) + (dayKey(e.start) !== dayKey(e.end) ? ' (след. день)' : '') + ((g => g ? ' · ☀ ' + hm(g.min) + ' до сна' + (g.cls === 'long' ? ' (долго)' : '') : '')(wakeGaps()[e.id])) + note };
   }
   return { cls: '', icon: '', title: '', sub: '' };
 }
