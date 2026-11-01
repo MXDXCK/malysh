@@ -13,4 +13,5 @@ python3 tests/synctest.py tests     # основной сценарий: 2–3 �
 python3 tests/pendingtest.py tests  # правки, пока предыдущая ещё летит в облако
 python3 tests/profiletest.py tests  # профиль малыша и настройки
 python3 tests/resilience.py tests   # зависание, обрыв связи, перезапуск
+python3 tests/livetest.py tests     # правка идущего сна на двух телефонах
 ```

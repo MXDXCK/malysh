@@ -520,3 +520,10 @@ ol.steps { margin: 10px 0; padding-left: 20px; display: grid; gap: 6px; font-siz
 .norm-warn { margin-top: 10px; font-size: 13px; background: var(--growth-soft); padding: 8px 10px; border-radius: 12px; }
 .linkbtn { color: var(--accent); font-weight: 800; text-decoration: underline; font-size: inherit; }
 @media (max-width: 360px) { .norm-facts { grid-template-columns: 1fr 1fr; } }
+
+/* ---- 1.8.1: правка идущего сна ---- */
+.sleep-now .sn-info { flex: 1 1 150px; min-width: 0; text-align: left; display: grid; color: inherit; }
+.sleep-now .sn-info small { display: block; color: var(--muted); font-weight: 700; font-size: 13px; }
+.sleep-now .sn-btns { display: flex; gap: 2px; margin-left: auto; }
+.sleep-now .sn-btns .btn { padding: 0 8px; }
+button.tile.live { cursor: pointer; }

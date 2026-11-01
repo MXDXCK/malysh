@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -460,7 +460,7 @@ function wakePill(e) {
 }
 function sleepTile(e, label) {
   const inner = `${wakePill(e)}<small>${label}</small><b>${e.live ? `<span data-since="${e.start}"></span>` : durS(e.end - e.start)}</b><span>${hhmm(e.start)} – ${e.live ? 'спит' : hhmm(e.end)}</span>`;
-  return e.live ? `<div class="tile ${sleepKind(e)} live">${inner}</div>` : `<button class="tile ${sleepKind(e)}" data-ev="${e.id}">${inner}</button>`;
+  return e.live ? `<button class="tile ${sleepKind(e)} live" data-act="edit-live">${inner}</button>` : `<button class="tile ${sleepKind(e)}" data-ev="${e.id}">${inner}</button>`;
 }
 const fmtDM = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' });
 // Блок плашек сна за дату D. nightD — дата ночи, которую показываем (по умолчанию ночь на D)
@@ -478,8 +478,8 @@ function sleepButton() {
   const t = S.timers.sleep;
   if (t) {
     const k = t.kind || autoKind(t.start);
-    return `<div class="sleep-now ${k}"><div><small>${k === 'night' ? 'Ночной сон' : 'Дневной сон'} · с ${hhmm(t.start)}</small><b data-since="${t.start}"></b></div>
-      <button class="btn ghost small" data-act="sleep-cancel">Отмена</button><button class="btn sleep" data-act="sleep-toggle">${I.sun} Проснулся</button></div>`;
+    return `<div class="sleep-now ${k}"><button class="sn-info" data-act="edit-live"><small>${k === 'night' ? 'Ночной сон' : 'Дневной сон'} · с ${hhmm(t.start)} ✎</small><b data-since="${t.start}"></b></button>
+      <span class="sn-btns"><button class="btn ghost small" data-act="edit-live">Изменить</button><button class="btn ghost small" data-act="sleep-cancel">Отмена</button></span><button class="btn sleep" data-act="sleep-toggle">${I.sun} Проснулся</button></div>`;
   }
   const k = autoKind(Date.now());
   const last = latest(S.events.filter(e => e.type === 'sleep'), 'end');
@@ -1196,6 +1196,34 @@ function toggleProduct(key) {
   else { st.done = todayStr(); st.start = st.start || s.start || todayStr(); toast(p.name + ' — введён ✓'); }
   S.solids[key] = st; save(); render();
 }
+// Идущий сон: поправить «Уснул», тип сна или сразу указать «Проснулся»
+function liveSleepForm() {
+  const t = S.timers.sleep; if (!t) return;
+  const now = Date.now();
+  openSheet('Идущий сон',
+    group('Тип сна', seg('kind', [['day', 'Дневной'], ['night', 'Ночной']], t.kind || autoKind(t.start))) +
+    field('Уснул', `<input type="datetime-local" name="start" value="${dtl(t.start)}" max="${dtl(now)}" required>`) +
+    `<div class="chips">${[5, 10, 15, 20, 30, 45].map(n => `<button type="button" class="chip" data-ago="${n}">${n} мин назад</button>`).join('')}</div>` +
+    field('Проснулся', `<input type="datetime-local" name="end" value="" max="${dtl(now)}">`, 'Оставьте пустым, если малыш ещё спит. Если уже проснулся — укажите время, и сон сохранится.'),
+    fd => {
+      const cur = S.timers.sleep;
+      if (!cur) { toast('Сон уже завершён на другом телефоне'); return; }
+      const now2 = Date.now(), start = parseDtl(fd.start), end = fd.end ? parseDtl(fd.end) : null;
+      if (!start) return false;
+      if (start > now2 + MIN) { toast('Время «Уснул» не может быть в будущем'); return false; }
+      if (now2 - start > 16 * HOUR) { toast('Сон дольше 16 часов — проверьте дату'); return false; }
+      if (end != null) {
+        if (end <= start) { toast('«Проснулся» должно быть позже «Уснул»'); return false; }
+        if (end > now2 + MIN) { toast('Время «Проснулся» не может быть в будущем'); return false; }
+        delete S.timers.sleep;
+        S.events.push({ id: uid(), type: 'sleep', start, end, kind: fd.kind });
+        toast('Сон записан · ' + dur(end - start));
+      } else {
+        S.timers.sleep = { ...cur, start, kind: fd.kind };
+        toast('Время сна исправлено');
+      }
+    }, { ok: 'Сохранить' });
+}
 function sleepForm(e, preset = {}) {
   const isNew = !e;
   let v = e;
@@ -1398,6 +1426,7 @@ function markPast() {
 
 const ACTIONS = {
   'sleep-toggle': sleepToggle,
+  'edit-live': () => liveSleepForm(),
   'sleep-cancel': () => { if (confirm('Отменить сон без сохранения?')) { delete S.timers.sleep; save(); render(); } },
   'add-sleep': t => sleepForm(null, { d: t.dataset.d, kind: t.dataset.kind }),
   'add-bottle': () => bottleForm(), 'add-solid': () => solidForm(), 'add-growth': () => growthForm(),
@@ -1410,7 +1439,7 @@ const ACTIONS = {
 const FORMS = { bottle: bottleForm, solid: solidForm, sleep: sleepForm, stool: stoolForm };
 
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-act],[data-ev],[data-gr],[data-vk],[data-ck],[data-sp],[data-spc],[data-day],[data-metric],[data-tab],[data-close],[data-del],[data-ml],[data-g],[data-fill],[data-x]');
+  const t = e.target.closest('[data-act],[data-ev],[data-gr],[data-vk],[data-ck],[data-sp],[data-spc],[data-day],[data-metric],[data-tab],[data-close],[data-del],[data-ml],[data-g],[data-ago],[data-fill],[data-x]');
   if (!t) return;
   const d = t.dataset;
   if (d.act && ACTIONS[d.act]) return ACTIONS[d.act](t);
@@ -1419,6 +1448,7 @@ document.addEventListener('click', e => {
   if (d.day) { const n = dateStr(addDays(parseDate(sleepDay).getTime(), +d.day)); sleepDay = n > todayStr() ? todayStr() : n; return render(); }
   if (d.fill) { const f = dlg.querySelector(`[name=${d.fill}]`); if (f) f.value = todayStr(); if (d.fill === 'done') { const st = dlg.querySelector('[name=start]'); if (st && !st.value) st.value = todayStr(); } return; }
   if (d.g) { const f = dlg.querySelector('[name=grams]'); if (f) f.value = d.g; return; }
+  if (d.ago) { const f = dlg.querySelector('[name=start]'); if (f) f.value = dtl(Date.now() - (+d.ago) * MIN); return; }
   if (d.ev) { const ev = S.events.find(x => x.id === d.ev); return ev && FORMS[ev.type] && FORMS[ev.type](ev); }
   if (d.gr) { const g = S.growth.find(x => x.id === d.gr); return g && growthForm(g); }
   if (d.vk) return vaccForm(d.vk);
