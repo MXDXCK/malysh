@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.8.1';
+const APP_VERSION = '1.9.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -454,7 +454,33 @@ function wakeGaps() {
   return map;
 }
 const wkTitle = { short: 'меньше обычного', long: 'дольше обычного — мог перегулять', ok: 'в норме' };
+// Нормы сна по возрасту (часы): [до N мес, ночь от, до, день от, до, за сутки от, до]
+// Ориентиры: AASM (4–12 мес — 12–16 ч в сутки), таблицы педиатров по месяцам.
+const SLEEP_NORM = [
+  [2, 8, 10, 6, 8, 14, 17], [3, 9, 10, 4, 5, 13, 15], [4, 10, 11, 3, 4.5, 13, 16], [7, 10, 11.5, 2.5, 4, 13, 15],
+  [12, 10, 12, 2, 3, 12, 15], [18, 10, 12, 1.5, 3, 12, 14], [999, 10, 12, 1.5, 2.5, 11, 14],
+];
+function sleepNorm() {
+  const m = ageMonths(); if (m == null || m < 0) return null;
+  const r = SLEEP_NORM.find(x => m < x[0]);
+  return { night: [r[1], r[2]], day: [r[3], r[4]], total: [r[5], r[6]] };
+}
+const fh = v => String(v).replace('.', ',');
+const normTxt = r => `${fh(r[0])}–${fh(r[1])} ч`;
+// Оценка: пока идёт — 'live'; в норме — 'ok'; чуть меньше (до 45 мин) — 'near'; заметно меньше — 'short'
+function normCls(ms, r, done) {
+  if (!r) return ''; if (!done) return 'live';
+  return ms >= r[0] * HOUR - MIN ? 'ok' : ms >= r[0] * HOUR - 45 * MIN ? 'near' : 'short';
+}
+function nightDone(parts) {
+  if (!parts.length || parts.some(e => e.live)) return false;
+  const lastEnd = Math.max(...parts.map(e => e.end));
+  return autoKind(Date.now()) === 'day' || Date.now() - lastEnd > 3 * HOUR;
+}
+function dayDone(D) { return D < todayStr() || Date.now() >= bedtimeOn(parseDate(D).getTime()); }
 function wakePill(e) {
+  // Ночь — это не «бодрствование перед сном»: на ночных плашках солнышко только у ночных пробуждений
+  if (sleepKind(e) === 'night' && (wakeGaps()[e.id] || {}).type !== 'nightwake') return '';
   const g = wakeGaps()[e.id]; if (!g) return '';
   return `<i class="wk ${g.cls}">☀ ${hm(g.min)}</i>`;
 }
@@ -467,12 +493,18 @@ const fmtDM = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }
 function sleepBlocks(D, nightD = D, nightTitle) {
   const n = sleepsFor(nightD).night, d = sleepsFor(D).day;
   const nt = nightTitle || 'Ночь на ' + fmtDM.format(parseDate(nightD));
-  const wakes = n.length > 1 ? ` · просыпался ${n.length - 1} ${pl(n.length - 1, ['раз', 'раза', 'раз'])}` : '';
-  return `<div class="sp-head night"><h4>${I.moon}${nt}</h4><span>${n.length ? dur(sleepDur(n)) + wakes : ''}</span></div>
+  const wakes = n.length > 1 ? ` · просыпалась ${n.length - 1} ${pl(n.length - 1, ['раз', 'раза', 'раз'])}` : '';
+  const nm = sleepNorm(), nMs = sleepDur(n), dMs = sleepDur(d);
+  const nCls = nm ? normCls(nMs, nm.night, nightDone(n)) : '', dCls = nm ? normCls(dMs, nm.day, dayDone(D)) : '';
+  const badge = (ms, cls) => `<b class="nb ${cls}">${durS(ms)}${cls === 'ok' ? ' ✓' : ''}</b>`;
+  const wk = n.length > 1 ? ` · ${n.length - 1} ${pl(n.length - 1, ['пробуждение', 'пробуждения', 'пробуждений'])}` : '';
+  const before = n.length ? wakeGaps()[n[0].id] : null;
+  return `<div class="sp-head night"><h4>${I.moon}${nt}</h4><span>${n.length ? badge(nMs, nCls) : ''}${nm ? `<em>норма ${normTxt(nm.night)}${wk}</em>` : ''}</span></div>
     <div class="tiles">${n.map((e, i) => sleepTile(e, n.length > 1 ? 'Часть ' + (i + 1) : 'Ночной сон')).join('')}<button class="tile add night" data-act="add-sleep" data-kind="night" data-d="${nightD}">${I.plus}<span>Ночь</span></button></div>
-    <div class="sp-head day"><h4>${I.sun}Дневной сон</h4><span>${d.length ? d.length + ' ' + pl(d.length, ['раз', 'раза', 'раз']) + ' · ' + dur(sleepDur(d)) : ''}</span></div>
+    ${before && before.type === 'last' ? `<p class="before-night">☀ Перед ночью бодрствовала ${hm(before.min)}</p>` : ''}
+    <div class="sp-head day"><h4>${I.sun}Дневной сон</h4><span>${d.length ? badge(dMs, dCls) : ''}${nm ? `<em>норма ${normTxt(nm.day)}${d.length ? ' · ' + d.length + ' ' + pl(d.length, ['сон', 'сна', 'снов']) : ''}</em>` : ''}</span></div>
     <div class="tiles">${d.map((e, i) => sleepTile(e, 'Сон ' + (i + 1))).join('')}<button class="tile add day" data-act="add-sleep" data-kind="day" data-d="${D}">${I.plus}<span>Дневной</span></button></div>
-    ${[...n, ...d].some(e => wakeGaps()[e.id]) ? `<p class="wk-legend"><i class="wk ok">☀ 1:45</i> бодрствовал перед сном · <i class="wk long">☀</i> дольше обычного · <i class="wk short">☀</i> меньше</p>` : ''}`;
+    ${[...n, ...d].some(e => wakeGaps()[e.id]) ? `<p class="wk-legend"><i class="wk ok">☀ 1:45</i> бодрствовала перед сном · <i class="wk long">☀</i> дольше обычного · <i class="wk short">☀</i> меньше</p>` : ''}`;
 }
 function sleepButton() {
   const t = S.timers.sleep;
@@ -898,7 +930,8 @@ const VIEWS = {
     const { night: n } = sleepsFor(nightD), { day: dd } = sleepsFor(D);
     out += `<section class="card sleep-card"><div class="card-head"><h3>Сон</h3><a href="#sleep" class="link">Все дни ›</a></div>
       ${sleepButton()}
-      <div class="sleep-sum"><div class="night"><small>${(evening || lateNight) ? 'Эта ночь' : 'Прошлая ночь'}</small><b>${n.length ? durS(sleepDur(n)) : '—'}</b></div><div class="day"><small>Днём сегодня</small><b>${dd.length ? durS(sleepDur(dd)) : '—'}</b></div></div>
+      ${(() => { const nm = sleepNorm(); const nc = nm ? normCls(sleepDur(n), nm.night, nightDone(n)) : '', dc = nm ? normCls(sleepDur(dd), nm.day, dayDone(D)) : '';
+        return `<div class="sleep-sum"><div class="night ${nc}"><small>${(evening || lateNight) ? 'Эта ночь' : 'Прошлая ночь'}</small><b>${n.length ? durS(sleepDur(n)) : '—'}</b>${nm ? `<em>норма ${normTxt(nm.night)}</em>` : ''}</div><div class="day ${dc}"><small>Днём сегодня</small><b>${dd.length ? durS(sleepDur(dd)) : '—'}</b>${nm ? `<em>норма ${normTxt(nm.day)}</em>` : ''}</div></div>`; })()}
       ${sleepBlocks(D, nightD, (evening || lateNight) ? 'Эта ночь' : 'Прошлая ночь')}</section>`;
     out += `<section class="quick">
       <button class="q feed" data-act="add-bottle">${I.bottle}<span>Бутылочка</span></button>
@@ -933,7 +966,9 @@ const VIEWS = {
     out += `<section class="card"><div class="daynav"><button class="icon-btn" data-day="-1" aria-label="Предыдущий день">${I.chevL}</button>
       <label><b>${label}</b><input type="date" id="sleep-date" value="${D}" max="${todayStr()}"></label>
       <button class="icon-btn" data-day="1" aria-label="Следующий день" ${isToday ? 'disabled' : ''}>${I.chevR}</button></div>
-      <div class="sleep-sum"><div class="night"><small>Ночью</small><b>${night.length ? durS(sleepDur(night)) : '—'}</b></div><div class="day"><small>Днём</small><b>${day.length ? durS(sleepDur(day)) : '—'}</b></div><div><small>Всего</small><b>${durS(sleepDur(night) + sleepDur(day))}</b></div></div>
+      ${(() => { const nm = sleepNorm(), nMs = sleepDur(night), dMs = sleepDur(day), done = dayDone(D) && nightDone(night);
+        const nc = nm ? normCls(nMs, nm.night, nightDone(night)) : '', dc = nm ? normCls(dMs, nm.day, dayDone(D)) : '', tc = nm ? normCls(nMs + dMs, nm.total, done) : '';
+        return `<div class="sleep-sum"><div class="night ${nc}"><small>Ночью</small><b>${night.length ? durS(nMs) : '—'}</b>${nm ? `<em>норма ${normTxt(nm.night)}</em>` : ''}</div><div class="day ${dc}"><small>Днём</small><b>${day.length ? durS(dMs) : '—'}</b>${nm ? `<em>норма ${normTxt(nm.day)}</em>` : ''}</div><div class="${tc}"><small>Всего</small><b>${durS(nMs + dMs)}</b>${nm ? `<em>норма ${normTxt(nm.total)}</em>` : ''}</div></div>`; })()}
       ${sleepBlocks(D)}
       <p class="hint" style="margin:12px 0 0">Нажмите на плашку, чтобы изменить время, тип сна или удалить запись. Стрелками или по дате можно открыть любой прошлый день и дописать сон.</p></section>`;
     const days = lastDays(7).map(t => { const s = sleepsFor(dateStr(t)); const nv = sleepDur(s.night), dv = sleepDur(s.day); return { t, total: nv + dv, parts: [{ v: dv, c: 'day' }, { v: nv, c: 'night' }] }; });

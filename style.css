@@ -527,3 +527,20 @@ ol.steps { margin: 10px 0; padding-left: 20px; display: grid; gap: 6px; font-siz
 .sleep-now .sn-btns { display: flex; gap: 2px; margin-left: auto; }
 .sleep-now .sn-btns .btn { padding: 0 8px; }
 button.tile.live { cursor: pointer; }
+
+/* ---- 1.9.0: норма сна ---- */
+.sp-head span { display: grid; justify-items: end; gap: 1px; }
+.sp-head span em, .sleep-sum em { font-style: normal; font-size: 11.5px; font-weight: 700; color: var(--muted); }
+.sleep-sum em { display: block; margin-top: 1px; }
+.nb { font-weight: 800; padding: 1px 7px; border-radius: 99px; font-variant-numeric: tabular-nums; }
+.nb.ok { background: var(--ok-soft); color: var(--ok); }
+.nb.short { background: var(--danger-soft); color: var(--danger); }
+.nb.live { background: var(--surface-2); color: var(--text); }
+.sleep-sum > div.ok { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ok) 55%, transparent); }
+.sleep-sum > div.short { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--danger) 55%, transparent); }
+.before-night { margin: 6px 2px 0; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.nb.near { background: var(--growth-soft); color: var(--growth); }
+.sleep-sum > div.near { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--growth) 60%, transparent); }
+.sp-head span { white-space: nowrap; }
+.sp-head h4 { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sleep-sum em { white-space: normal; }
