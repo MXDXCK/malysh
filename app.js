@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -250,40 +250,73 @@ function newer(a, b) {
   for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
   return false;
 }
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) { /* */ } };
+let checking = false, lastCheck = 0;
 async function checkUpdate(manual) {
+  if (checking) return;
+  checking = true; lastCheck = Date.now();
+  const had = update && update.version;
   try {
     const r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     const remote = await r.json();
     update = newer(remote.version, APP_VERSION) ? remote : null;
     if (manual) toast(update ? 'Есть новая версия ' + remote.version : 'У вас последняя версия');
+    else if (update && update.version !== had) toast('Доступна новая версия ' + update.version);
   } catch (e) {
     if (manual) toast('Не удалось проверить — нет интернета?');
   }
+  checking = false;
   if (!dlg.open) render(); else if (manual) settingsForm();
 }
 async function applyUpdate() {
   toast('Обновляю…');
+  if (update) lsSet('malysh.updating', update.version);
   try {
     if ('serviceWorker' in navigator) {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg) await reg.update();
     }
     if (window.caches) { const keys = await caches.keys(); await Promise.all(keys.map(k => caches.delete(k))); }
+    // Заранее скачиваем свежие файлы в обход кэша браузера
+    await Promise.all(['./', './index.html', './app.js', './style.css', './sync.js'].map(u => fetch(u, { cache: 'reload' }).catch(() => {})));
   } catch (e) { /* ничего страшного — просто перезагрузим */ }
   location.reload();
 }
-function updateBanner() {
+// Полоса над содержимым на всех вкладках — видна, даже если прокрутить вниз
+function updateStrip() {
   if (!update) return '';
-  return `<section class="card update-banner"><span class="dot growth">${I.refresh}</span><div><b>Доступна версия ${esc(update.version)}</b><small>Данные сохранятся</small></div><button class="btn ok small" data-act="whatsnew">Обновить</button></section>`;
+  return `<button class="update-strip" data-act="whatsnew"><span class="u-ico">${I.refresh}</span><span class="u-txt"><b>Обновите приложение</b><small>Доступна новая версия ${esc(update.version)} · записи сохранятся</small></span><span class="u-btn">Обновить</span></button>`;
+}
+function notesList(notes) {
+  return Array.isArray(notes) && notes.length ? `<div class="field"><span>Что нового</span><ul class="whatsnew">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul></div>` : '';
 }
 function whatsNew() {
   if (!update) return;
-  openSheet('Новая версия ' + update.version,
+  openSheet('Доступна версия ' + update.version,
     `<p class="muted">Сейчас установлена ${APP_VERSION}${update.date ? ' · обновление от ' + esc(fmtLong.format(parseDate(update.date))) : ''}</p>` +
-    (Array.isArray(update.notes) && update.notes.length ? `<div class="field"><span>Что нового</span><ul class="whatsnew">${update.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul></div>` : '') +
-    `<p class="muted">Все записи о малыше останутся на месте.</p>`,
+    notesList(update.notes) +
+    `<p class="muted">Все записи о малыше и идущий таймер сна останутся на месте.</p>`,
     () => { applyUpdate(); return false; }, { ok: 'Обновить сейчас' });
+}
+// После обновления один раз показываем, что нового (и если приложение обновилось само при запуске)
+async function showUpdatedOnce() {
+  const seen = lsGet('malysh.seenVersion'), target = lsGet('malysh.updating');
+  if (target && newer(target, APP_VERSION)) {
+    lsSet('malysh.updating', null);
+    toast('Новая версия ещё загружается на сервер — попробуйте через пару минут');
+    return;
+  }
+  lsSet('malysh.updating', null);
+  lsSet('malysh.seenVersion', APP_VERSION);
+  if (!seen || !newer(APP_VERSION, seen)) return; // первая установка или та же версия
+  let notes = [];
+  try { const r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' }); const j = await r.json(); if (j.version === APP_VERSION) notes = j.notes || []; } catch (e) { /* без списка */ }
+  if (dlg.open) return;
+  openSheet('Приложение обновлено 🎉',
+    `<p class="muted">Версия ${esc(seen)} → <b style="color:var(--ok)">${APP_VERSION}</b>. Все записи на месте.</p>` + notesList(notes),
+    () => {}, { ok: 'Отлично' });
 }
 
 /* ---------------- Рендер ---------------- */
@@ -309,7 +342,7 @@ function render() {
   applyTheme();
   if (!VIEWS[tab]) tab = 'today';
   const old = $('#scroller'), y = old ? old.scrollTop : 0;
-  $('#app').innerHTML = header() + `<div id="scroller" class="scroller"><main class="view">${VIEWS[tab]()}</main></div>` + tabbar();
+  $('#app').innerHTML = header() + updateStrip() + `<div id="scroller" class="scroller"><main class="view">${VIEWS[tab]()}</main></div>` + tabbar();
   const sc = $('#scroller'); if (sc && y && !resetScroll) sc.scrollTop = y;
   resetScroll = false;
   tick();
@@ -522,7 +555,7 @@ const VIEWS = {
     const ml = sum(ev.filter(e => e.type === 'bottle'), e => +e.ml);
     const lastFeed = latest(S.events.filter(isFeed));
     const stoolsToday = ev.filter(isStool), lastStool = latest(S.events.filter(isStool));
-    let out = updateBanner() + installHint();
+    let out = installHint();
     out += `<section class="hero"><small>${fmtDay.format(now)}</small><h2>${partOfDay(h)}${S.profile.name ? ', ' + esc(S.profile.name) : ''}!</h2></section>`;
     if (!S.profile.birth) out += `<section class="card hello"><h3>Добро пожаловать! 👋</h3><p>Укажите имя и дату рождения малыша — приложение посчитает возраст и составит календарь прививок.</p><button class="btn primary" data-act="settings">Заполнить профиль</button></section>`;
     // Вечером показываем наступающую ночь, днём — прошедшую
@@ -1035,8 +1068,10 @@ function toast(msg) {
 window.addEventListener('hashchange', () => { tab = location.hash.slice(1) || 'today'; if (tab === 'sleep') sleepDay = todayStr(); resetScroll = true; render(); });
 window.addEventListener('storage', e => { if (e.key === KEY) { S = load(); if (!dlg.open) render(); } });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { S = load(); if (!dlg.open) render(); checkUpdate(false); } });
+// Пока приложение открыто — проверяем обновления каждые 10 минут
+setInterval(() => { if (!document.hidden && Date.now() - lastCheck > 9 * 60 * 1000) checkUpdate(false); }, 60 * 1000);
 setInterval(tick, 1000);
 setInterval(() => { if (!dlg.open) render(); }, 30000);
 render();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
-if (location.protocol !== 'file:') checkUpdate(false);
+if (location.protocol !== 'file:') { checkUpdate(false); showUpdatedOnce(); }

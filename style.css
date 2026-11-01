@@ -452,3 +452,22 @@ main.view { max-width: 560px; margin: 0 auto; padding-bottom: 24px; }
   background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none;
 }
 #toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
+
+/* ---- 1.4.0: полоса «Обновите приложение» ---- */
+.update-strip {
+  flex: none; display: flex; align-items: center; gap: 12px; width: calc(100% - 32px); max-width: 528px; margin: 0 auto 10px;
+  padding: 12px 14px; border-radius: 16px; background: var(--ok); color: #fff; text-align: left;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ok) 35%, transparent); animation: pop .35s ease-out;
+}
+.update-strip .u-ico { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.2); flex: none; }
+.update-strip .u-ico svg { width: 20px; height: 20px; animation: spin 2.4s linear infinite; }
+.update-strip .u-txt { flex: 1; min-width: 0; display: grid; }
+.update-strip b { font-weight: 800; font-size: 15px; }
+.update-strip small { font-size: 12.5px; opacity: .9; }
+.update-strip .u-btn { flex: none; background: #fff; color: var(--ok); font-weight: 800; font-size: 14px; padding: 9px 14px; border-radius: 12px; }
+:root[data-theme="dark"] .update-strip { color: #10261A; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .update-strip { color: #10261A; } }
+:root[data-theme="dark"] .update-strip .u-btn { background: #10261A; color: var(--ok); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .update-strip .u-btn { background: #10261A; color: var(--ok); } }
+@keyframes pop { from { transform: translateY(-8px); opacity: 0; } }
+@keyframes spin { to { transform: rotate(360deg); } }
