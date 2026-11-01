@@ -1,7 +1,7 @@
 // Service worker: приложение работает без интернета.
 // Файлы сайта — «сначала сеть, потом кэш», чтобы обновления приходили сразу.
 // Библиотеки Firebase и шрифты (неизменяемые версии) — «сначала кэш».
-const CACHE = 'malysh-1.5.0';
+const CACHE = 'malysh-1.6.0';
 const SHELL = ['./', './index.html', './style.css', './app.js', './sync.js', './firebase-config.js', './manifest.webmanifest', './version.json', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 const STATIC_HOSTS = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
@@ -29,4 +29,13 @@ self.addEventListener('fetch', e => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
     return res;
   }).catch(() => caches.match(req, { ignoreSearch: true }).then(hit => hit || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error()))));
+});
+
+// Нажатие на уведомление «Пора укладывать» — открываем приложение
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    for (const c of list) { if ('focus' in c) return c.focus(); }
+    return self.clients.openWindow ? self.clients.openWindow('./') : null;
+  }));
 });

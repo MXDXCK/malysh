@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -45,7 +45,7 @@ function save() {
 // одновременно добавлять записи, и ничего не перезапишется.
 function flatten(st = S) {
   const f = {};
-  f.profile = JSON.stringify({ name: st.profile.name, birth: st.profile.birth });
+  f.profile = JSON.stringify({ name: st.profile.name, birth: st.profile.birth, ...(st.profile.sleepCfg ? { sleepCfg: st.profile.sleepCfg } : {}) });
   if (st.timers && Object.keys(st.timers).length) f.timers = JSON.stringify(st.timers);
   st.events.forEach(e => { f['ev_' + e.id] = JSON.stringify(e); });
   st.growth.forEach(g => { f['gr_' + g.id] = JSON.stringify(g); });
@@ -60,7 +60,7 @@ function unflatten(map) {
   for (const [id, raw] of Object.entries(map)) {
     let v; try { v = JSON.parse(raw); } catch (e) { continue; }
     if (!v) continue;
-    if (id === 'profile') Object.assign(st.profile, { name: v.name || '', birth: v.birth || '' });
+    if (id === 'profile') Object.assign(st.profile, { name: v.name || '', birth: v.birth || '' }, v.sleepCfg ? { sleepCfg: v.sleepCfg } : {});
     else if (id === 'timers') st.timers = v;
     else if (id.startsWith('ev_')) st.events.push(v);
     else if (id.startsWith('gr_')) st.growth.push(v);
@@ -408,8 +408,198 @@ function sleepButton() {
   const k = autoKind(Date.now());
   const last = latest(S.events.filter(e => e.type === 'sleep'), 'end');
   return `<div class="sleep-now idle"><div><small>${last ? 'Бодрствует · проснулся в ' + hhmm(last.end) : 'Малыш бодрствует'}</small><b>${last ? dur(Date.now() - last.end) : '—'}</b></div>
-    <button class="btn sleep" data-act="sleep-toggle">${I.moon} Уснул</button></div><p class="hint" style="margin:8px 0 0">Начнётся ${k === 'night' ? 'ночной' : 'дневной'} сон — тип можно поменять, нажав на плашку</p>`;
+    <button class="btn sleep" data-act="sleep-toggle">${I.moon} Уснул</button></div>${forecastBlock(forecast())}`;
 }
+/* ---- Прогноз сна ---- */
+// По возрасту: [до N месяцев, бодрствование от, до (мин), обычно дневных снов, типичный дневной сон (мин)]
+// Ориентиры из открытых таблиц «окон бодрствования» (Huckleberry, Napper и др.): в 5–6 мес — 1,5–2,5 ч.
+const WAKE_TABLE = [
+  [1, 45, 60, 5, 45], [2, 60, 90, 4, 50], [3, 75, 105, 4, 50], [4, 90, 120, 4, 50],
+  [5, 90, 135, 4, 50], [6, 90, 150, 3, 60], [7, 120, 180, 3, 60], [9, 150, 210, 2, 75],
+  [12, 180, 240, 2, 75], [18, 240, 300, 1, 120], [24, 300, 360, 1, 120], [999, 330, 390, 1, 90],
+];
+const SLEEP_CFG = { mode: 'auto', lo: 90, hi: 135, bedtime: '19:30', remind: 15 };
+const sleepCfg = () => ({ ...SLEEP_CFG, ...(S.profile.sleepCfg || {}) });
+function ageMonths() { return S.profile.birth ? (startOfDay(Date.now()) - parseDate(S.profile.birth).getTime()) / DAY / 30.44 : null; }
+function ageRow() { const m = ageMonths(); return m == null ? null : WAKE_TABLE.find(r => m < r[0]); }
+const median = a => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y), i = s.length >> 1; return s.length % 2 ? s[i] : (s[i - 1] + s[i]) / 2; };
+const r5 = m => Math.round(m / 5) * 5;
+function hm(min) { min = Math.round(min); const h = Math.floor(min / 60), m = min % 60; return h ? h + ':' + pad(m) : m + ' мин'; }
+
+// Как малыш реально бодрствует и спит днём за последние 7 дней
+function personalStats() {
+  const since = Date.now() - 7 * DAY;
+  const sl = S.events.filter(e => e.type === 'sleep' && e.end > since).sort((a, b) => a.start - b.start);
+  const gaps = [];
+  for (let i = 1; i < sl.length; i++) { const g = (sl[i].start - sl[i - 1].end) / MIN; if (g >= 20 && g <= 360) gaps.push(g); }
+  const naps = sl.filter(e => sleepKind(e) === 'day').map(e => (e.end - e.start) / MIN).filter(m => m >= 15 && m <= 240);
+  return { wake: gaps.length >= 5 ? median(gaps) : 0, wakeN: gaps.length, nap: naps.length >= 3 ? median(naps) : 0 };
+}
+// Окно бодрствования [от, до] в минутах. type: first — после ночи, middle — между дневными снами, last — перед ночью
+function wakeRange(type) {
+  const cfg = sleepCfg(), row = ageRow();
+  let lo, hi;
+  if (cfg.mode === 'custom') return [r5(+cfg.lo), r5(+cfg.hi)]; // своё окно — ровно как задано
+  else {
+    if (!row) return null;
+    lo = row[1]; hi = row[2];
+    const ps = personalStats();
+    if (ps.wake) { // подстраиваемся под малыша: сдвигаем середину окна наполовину к его привычному времени
+      const c = (lo + hi) / 2, w = hi - lo;
+      const c2 = Math.min(hi + 20, Math.max(lo - 20, (c + ps.wake) / 2));
+      lo = c2 - w / 2; hi = c2 + w / 2;
+    }
+  }
+  const sp = hi - lo;
+  if (type === 'first') return [r5(lo), r5(lo + sp * 0.6)];
+  if (type === 'last') return [r5(lo + sp * 0.4), r5(hi)];
+  return [r5(lo + sp * 0.15), r5(hi - sp * 0.1)];
+}
+function bedtimeOn(ts) { const [h, m] = sleepCfg().bedtime.split(':').map(Number); const d = new Date(ts); d.setHours(h || 19, m || 0, 0, 0); return d.getTime(); }
+
+function forecast(now = Date.now()) {
+  if (!S.profile.birth || S.timers.sleep) return null;
+  const last = latest(S.events.filter(e => e.type === 'sleep'), 'end');
+  if (!last || last.end > now || now - last.end > 8 * HOUR) return null;
+  const cfg = sleepCfg(), row = ageRow(), ps = personalStats();
+  const awake = last.end, bed = bedtimeOn(awake);
+  const mid = r => (r[0] + r[1]) / 2;
+  const lr = wakeRange('last'), mr = wakeRange('middle'); if (!lr) return null;
+  // Дневной сон уже не помещается: даже короткий сон отодвинет ночь слишком поздно
+  const noRoomForNap = t => t + mid(mr) * MIN + 20 * MIN + lr[0] * MIN > bed + 30 * MIN;
+  let type = sleepKind(last) === 'night' ? 'first' : 'middle';
+  if (type === 'middle' && (awake + mid(lr) * MIN >= bed - 40 * MIN || noRoomForNap(awake))) type = 'last';
+  const r = type === 'last' ? lr : wakeRange(type);
+  const from = awake + r[0] * MIN, to = awake + r[1] * MIN, prepare = from - cfg.remind * MIN;
+  const stage = now < prepare ? 'ok' : now < from ? 'soon' : now <= to ? 'now' : 'late';
+  // План на остаток дня
+  const napLen = (ps.nap || (row ? row[4] : 50)) * MIN;
+  // Ночь — около желаемого времени, но в пределах окна бодрствования после последнего сна
+  const nightAfter = t => Math.min(Math.max(bed, t + lr[0] * MIN), t + lr[1] * MIN);
+  const plan = [];
+  if (type !== 'last') {
+    let t = (from + to) / 2 + napLen;
+    for (let i = 0; i < 6; i++) {
+      if (t + mid(lr) * MIN >= bed - 40 * MIN || noRoomForNap(t)) { plan.push({ kind: 'night', at: nightAfter(t) }); break; }
+      const s = t + mid(mr) * MIN;
+      const len = Math.min(napLen, Math.max(20 * MIN, bed - s - mid(lr) * MIN)); // последний сон перед ночью — короткий
+      plan.push({ kind: 'day', at: s, short: len < napLen - 10 * MIN }); t = s + len;
+    }
+  }
+  return { awake, type, next: type === 'last' ? 'night' : 'nap', r, from, to, prepare, stage, plan, personal: cfg.mode === 'auto' && ps.wake ? ps.wake : 0, custom: cfg.mode === 'custom' };
+}
+const untilTxt = ms => (ms <= 0 ? 'сейчас' : 'через ' + dur(ms));
+function forecastBlock(f) {
+  if (!f) {
+    if (!S.profile.birth) return `<p class="hint fc-hint">Укажите дату рождения в настройках — появится прогноз, когда укладывать.</p>`;
+    if (!S.events.some(e => e.type === 'sleep')) return `<p class="hint fc-hint">Запишите хотя бы один сон — и приложение подскажет, когда укладывать в следующий раз.</p>`;
+    return '';
+  }
+  const now = Date.now(), nm = f.next === 'night' ? 'ночной сон' : 'дневной сон';
+  const head = { ok: 'Следующий ' + nm, soon: 'Пора готовиться ко сну', now: 'Пора укладывать', late: 'Перегуливает' }[f.stage];
+  const sub = {
+    ok: `Начните ритуал в ${hhmm(f.prepare)} (${untilTxt(f.prepare - now)})`,
+    soon: 'Приглушите свет, уберите активные игры, начните ритуал',
+    now: `Окно открыто ещё ${dur(f.to - now)} — укладывайте при первых признаках усталости`,
+    late: `Окно закрылось ${dur(now - f.to)} назад — уложите как можно скорее`,
+  }[f.stage];
+  const span = f.to + (f.to - f.awake) * 0.15 - f.awake, pos = t => Math.max(0, Math.min(100, (t - f.awake) / span * 100));
+  const r5t = t => Math.round(t / (5 * MIN)) * 5 * MIN;
+  const planTxt = f.plan.length ? 'Дальше: ' + f.plan.map(p => (p.kind === 'night' ? 'ночь ≈ ' : p.short ? 'короткий сон ≈ ' : 'сон ≈ ') + hhmm(r5t(p.at))).join(' · ') : '';
+  const basis = f.custom ? 'ваше окно' : 'по возрасту' + (f.personal ? ' и привычкам малыша' : '');
+  const al = alertPrefs(), target = f.prepare > now ? f.prepare : f.from, mins = Math.round((target - now) / MIN);
+  return `<div class="forecast ${f.stage}">
+    <div class="fc-top"><small>${head}</small><b>${hhmm(f.from)} – ${hhmm(f.to)}</b><span>${sub}</span></div>
+    <div class="fc-bar"><i style="width:${pos(now)}%"></i><em style="left:${pos(f.from)}%;width:${pos(f.to) - pos(f.from)}%"></em></div>
+    <div class="fc-meta"><span>Бодрствование ${hm(f.r[0])}–${hm(f.r[1])} · ${basis}</span>${planTxt ? `<span>${planTxt}</span>` : ''}</div>
+    ${al.shortcut && mins >= 1 ? `<button class="btn small fc-timer" data-x="ios-timer" data-min="${mins}">⏰ Таймер iPhone на ${hm(mins)}</button>` : ''}
+  </div>`;
+}
+
+/* ---- Сигналы: звук и уведомление, пока приложение открыто ---- */
+const ALERT_KEY = 'malysh.alerts';
+function alertPrefs() { try { return { sound: true, notify: false, shortcut: false, ...(JSON.parse(localStorage.getItem(ALERT_KEY) || '{}')) }; } catch (e) { return { sound: true, notify: false, shortcut: false }; } }
+function setAlertPrefs(p) { try { localStorage.setItem(ALERT_KEY, JSON.stringify({ ...alertPrefs(), ...p })); } catch (e) { /* */ } }
+let audioCtx = null;
+function unlockAudio() {
+  try {
+    if (!audioCtx) { const C = window.AudioContext || window.webkitAudioContext; if (C) audioCtx = new C(); }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) { /* */ }
+}
+document.addEventListener('pointerdown', unlockAudio, { passive: true });
+function chime() {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime + 0.05;
+  [[659.3, 0], [784, 0.35], [987.8, 0.7], [784, 1.4], [987.8, 1.75]].forEach(([f, dt]) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t0 + dt); g.gain.linearRampToValueAtTime(0.35, t0 + dt + 0.03); g.gain.exponentialRampToValueAtTime(0.001, t0 + dt + 0.9);
+    o.connect(g).connect(audioCtx.destination); o.start(t0 + dt); o.stop(t0 + dt + 1);
+  });
+}
+function fireAlert(title, body) {
+  const p = alertPrefs();
+  toast(title);
+  if (p.sound) chime();
+  if (navigator.vibrate) { try { navigator.vibrate([200, 100, 200]); } catch (e) { /* */ } }
+  if (p.notify && 'Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
+    navigator.serviceWorker.ready.then(r => r.showNotification(title, { body, tag: 'malysh-sleep', renotify: true, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png' })).catch(() => {});
+  }
+}
+function checkAlerts() {
+  const f = forecast(); if (!f) return;
+  const now = Date.now(), name = S.profile.name || 'малыша';
+  let fired = {}; try { fired = JSON.parse(localStorage.getItem('malysh.fired') || '{}'); } catch (e) { /* */ }
+  const fresh = t => now >= t && now - t < 15 * MIN; // не трезвоним о давно прошедшем
+  let changed = false;
+  if (fresh(f.prepare) && !fired[f.awake + 's']) {
+    fired[f.awake + 's'] = 1; changed = true;
+    fireAlert('Пора готовиться ко сну', `Уложите ${name} в ${hhmm(f.from)}–${hhmm(f.to)} — ${f.next === 'night' ? 'ночной' : 'дневной'} сон`);
+  }
+  if (fresh(f.to) && !fired[f.awake + 'l']) {
+    fired[f.awake + 'l'] = 1; changed = true;
+    fireAlert('Окно бодрствования закончилось', `Уложите ${name} как можно скорее, чтобы не перегулял`);
+  }
+  if (changed) {
+    const keep = Object.keys(fired).slice(-20); const o = {}; keep.forEach(k => { o[k] = 1; });
+    try { localStorage.setItem('malysh.fired', JSON.stringify(o)); } catch (e) { /* */ }
+  }
+}
+async function askNotify() {
+  if (!('Notification' in window)) { alert('На этом устройстве уведомления недоступны. На iPhone они работают в приложении, установленном на экран «Домой» (iOS 16.4 и новее).'); return false; }
+  let p = Notification.permission;
+  if (p === 'default') p = await Notification.requestPermission();
+  if (p === 'granted') { setAlertPrefs({ notify: true }); toast('Уведомления включены'); return true; }
+  alert('Уведомления запрещены. Разрешить их можно в Настройках iPhone → Уведомления → Малыш.');
+  return false;
+}
+function sleepSettingsBlock() {
+  const c = sleepCfg(), a = alertPrefs(), row = ageRow();
+  const opts = (sel) => { let o = ''; for (let m = 30; m <= 360; m += 15) o += `<option value="${m}" ${+sel === m ? 'selected' : ''}>${hm(m)}</option>`; return o; };
+  const nState = !('Notification' in window) ? 'недоступны на этом устройстве' : Notification.permission === 'granted' ? (a.notify ? 'включены ✓' : 'разрешены, но выключены') : Notification.permission === 'denied' ? 'запрещены в настройках iPhone' : 'не включены';
+  return `<div class="settings-block"><h4>Прогноз сна</h4>
+    <p>${row ? `По возрасту бодрствование ${hm(row[1])}–${hm(row[2])}, обычно ${row[3]} ${pl(row[3], ['дневной сон', 'дневных сна', 'дневных снов'])}. ` : ''}Прогноз подстраивается под реальные записи сна малыша.</p>
+    ${group('Окно бодрствования', seg('sc_mode', [['auto', 'По возрасту'], ['custom', 'Своё']], c.mode))}
+    <div class="two">${field('От', `<select name="sc_lo">${opts(c.lo)}</select>`)}${field('До', `<select name="sc_hi">${opts(c.hi)}</select>`)}</div>
+    <div class="two">${field('Ночной сон около', `<input type="time" name="sc_bed" value="${esc(c.bedtime)}">`)}${field('Напомнить за', `<select name="sc_rem">${[5, 10, 15, 20, 30].map(m => `<option value="${m}" ${+c.remind === m ? 'selected' : ''}>${m} мин</option>`).join('')}</select>`)}</div>
+    <p class="muted" style="font-size:13px">«От» и «До» действуют, если выбрано «Своё». Эти настройки общие для всех телефонов семьи.</p>
+    <h4 style="margin-top:6px">Сигналы на этом телефоне</h4>
+    <label class="checkline"><input type="checkbox" name="al_sound" ${a.sound ? 'checked' : ''}> Звук, когда пора укладывать</label>
+    <p>Уведомления: <b>${nState}</b></p>
+    ${'Notification' in window && Notification.permission !== 'denied' && !(Notification.permission === 'granted' && a.notify) ? `<button type="button" class="btn" data-x="notify-on">Включить уведомления</button>` : ''}
+    <p class="muted" style="font-size:13px">Звук и уведомления срабатывают, пока приложение открыто (можно оставить его на экране). Чтобы сигнал пришёл при закрытом приложении, используйте таймер iPhone ниже.</p>
+    <label class="checkline"><input type="checkbox" name="al_shortcut" ${a.shortcut ? 'checked' : ''}> Кнопка «Таймер iPhone» (через Быстрые команды)</label>
+    <details class="tips"><summary>Как настроить таймер iPhone — 1 раз, 2 минуты</summary><ol class="steps">
+      <li>Откройте приложение <b>«Быстрые команды»</b> (Shortcuts) → <b>+</b> (новая команда).</li>
+      <li>Нажмите на название вверху → <b>«Переименовать»</b> → введите точно: <b>Малыш таймер</b>.</li>
+      <li><b>«Добавить действие»</b> → найдите <b>«Запустить таймер»</b> (Часы).</li>
+      <li>В действии нажмите на число минут → выберите переменную <b>«Ввод быстрой команды»</b>. Единицы — <b>минуты</b>.</li>
+      <li>Нажмите <b>«Готово»</b>. Включите галочку выше — в прогнозе появится кнопка «⏰ Таймер iPhone». Она откроет Быстрые команды и заведёт таймер до начала ритуала.</li>
+    </ol><p class="muted" style="font-size:13px">Таймер iPhone звонит, даже если приложение закрыто и телефон в беззвучном режиме.</p></details>
+  </div>`;
+}
+
 function partOfDay(h) { return h < 5 ? 'Доброй ночи' : h < 12 ? 'Доброе утро' : h < 17 ? 'Добрый день' : h < 23 ? 'Добрый вечер' : 'Доброй ночи'; }
 
 /* ---- Прикорм: продукты ---- */
@@ -920,6 +1110,7 @@ function settingsForm() {
     field('Имя малыша', `<input name="name" value="${esc(p.name)}" placeholder="Например, Миша" maxlength="40">`) +
     field('Дата рождения', `<input type="date" name="birth" value="${esc(p.birth)}" max="${todayStr()}">`) +
     group('Тема', seg('theme', [['auto', 'Как в системе'], ['light', 'Светлая'], ['dark', 'Тёмная']], p.theme || 'auto')) +
+    sleepSettingsBlock() +
     syncBlock() +
     `<div class="settings-block"><h4>Обновление</h4>
       <p>Установлена версия ${APP_VERSION}. ${update ? `<b style="color:var(--ok)">Доступна ${esc(update.version)}.</b>` : 'Приложение само проверяет обновления при запуске.'}</p>
@@ -931,7 +1122,13 @@ function settingsForm() {
       <button type="button" class="btn" data-x="import">Восстановить из копии</button>
       <button type="button" class="btn ghost danger" data-x="clear">Удалить все данные</button>
     </div>`,
-    fd => { Object.assign(S.profile, { name: fd.name.trim(), birth: fd.birth, theme: fd.theme }); toast('Сохранено'); });
+    fd => {
+      let lo = +fd.sc_lo, hi = +fd.sc_hi; if (lo > hi) [lo, hi] = [hi, lo];
+      const sc = { mode: fd.sc_mode || 'auto', lo, hi, bedtime: fd.sc_bed || '19:30', remind: +fd.sc_rem || 15 };
+      Object.assign(S.profile, { name: fd.name.trim(), birth: fd.birth, theme: fd.theme, sleepCfg: sc });
+      setAlertPrefs({ sound: !!fd.al_sound, shortcut: !!fd.al_shortcut });
+      toast('Сохранено');
+    });
 }
 
 function syncBlock() {
@@ -1052,6 +1249,12 @@ document.addEventListener('click', e => {
     if (confirm('Отключить синхронизацию на этом телефоне? Записи останутся, но перестанут обновляться.')) { window.Sync.leave(); settingsForm(); }
     return;
   }
+  if (d.x === 'notify-on') { keepSettingsFields(); askNotify().then(() => settingsForm()); return; }
+  if (d.x === 'ios-timer') {
+    const m = Math.max(1, +t.dataset.min || 1);
+    location.href = 'shortcuts://run-shortcut?name=' + encodeURIComponent('Малыш таймер') + '&input=text&text=' + m;
+    return;
+  }
   if (d.x === 'hide-install') { try { localStorage.setItem('malysh.hideInstall', '1'); } catch (er) { /* */ } return render(); }
   if (d.x === 'clear') {
     const shared = window.Sync && window.Sync.family;
@@ -1079,6 +1282,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { S 
 // Пока приложение открыто — проверяем обновления каждые 10 минут
 setInterval(() => { if (!document.hidden && Date.now() - lastCheck > 9 * 60 * 1000) checkUpdate(false); }, 60 * 1000);
 setInterval(tick, 1000);
+setInterval(checkAlerts, 20000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAlerts(); });
 setInterval(() => { if (!dlg.open) render(); }, 30000);
 render();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
