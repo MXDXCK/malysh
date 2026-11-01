@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -304,10 +304,14 @@ function header() {
 function tabbar() {
   return `<div class="tabbar"><nav>${TABS.map(([k, l, ic]) => `<a href="#${k}" class="${tab === k ? 'on' : ''}" ${tab === k ? 'aria-current="page"' : ''}><span class="pip">${ic}</span>${l}</a>`).join('')}</nav></div>`;
 }
+let resetScroll = false;
 function render() {
   applyTheme();
   if (!VIEWS[tab]) tab = 'today';
-  $('#app').innerHTML = header() + `<main class="view">${VIEWS[tab]()}</main>` + tabbar();
+  const old = $('#scroller'), y = old ? old.scrollTop : 0;
+  $('#app').innerHTML = header() + `<div id="scroller" class="scroller"><main class="view">${VIEWS[tab]()}</main></div>` + tabbar();
+  const sc = $('#scroller'); if (sc && y && !resetScroll) sc.scrollTop = y;
+  resetScroll = false;
   tick();
 }
 function tick() {
@@ -1028,7 +1032,7 @@ function toast(msg) {
 }
 
 /* ---------------- Запуск ---------------- */
-window.addEventListener('hashchange', () => { tab = location.hash.slice(1) || 'today'; if (tab === 'sleep') sleepDay = todayStr(); render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { tab = location.hash.slice(1) || 'today'; if (tab === 'sleep') sleepDay = todayStr(); resetScroll = true; render(); });
 window.addEventListener('storage', e => { if (e.key === KEY) { S = load(); if (!dlg.open) render(); } });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { S = load(); if (!dlg.open) render(); checkUpdate(false); } });
 setInterval(tick, 1000);

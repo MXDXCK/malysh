@@ -428,3 +428,27 @@ button.stat { text-align: left; font: inherit; color: inherit; width: 100%; }
   .quick { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 340px) { .tabbar a { font-size: 0; } }
+
+/* ---- 1.3.1: каркас экрана для iPhone ----
+   Страница целиком не прокручивается: шапка сверху, прокручиваемая середина и меню снизу —
+   три части одного блока на весь экран. Так меню не может «уехать» при прокрутке. */
+html, body { height: 100%; overflow: hidden; }
+body { position: fixed; inset: 0; width: 100%; }
+#app {
+  position: absolute; inset: 0; max-width: none; margin: 0; min-height: 0; padding: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.top {
+  position: relative; top: auto; flex: none; width: 100%; max-width: 560px; margin: 0 auto;
+  background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; z-index: 1;
+}
+.scroller {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+}
+main.view { max-width: 560px; margin: 0 auto; padding-bottom: 24px; }
+.tabbar {
+  position: relative; left: auto; right: auto; bottom: auto; flex: none; z-index: 1;
+  background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+#toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
