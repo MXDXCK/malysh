@@ -1,19 +1,37 @@
 /*
- * Синхронизация между телефонами мамы и папы через Firebase Firestore.
- * Работает, только если в firebase-config.js вписаны настройки проекта.
- * Телефоны связываются «кодом семьи»: все записи лежат в families/<код>/items/<id>.
+ * Синхронизация между телефонами семьи через Firebase Firestore.
+ * Телефоны связываются «кодом семьи»: записи лежат в families/<код>/items/<id>.
+ *
+ * Экономия бесплатного лимита (с версии 1.5.0):
+ * - каждая запись в облаке хранит время изменения t (время сервера);
+ * - телефон помнит, до какого момента он уже всё получил (cursor), и спрашивает
+ *   у облака только изменения после него — а не все записи при каждом открытии;
+ * - удаление — это пометка del: true («надгробие»), чтобы другие телефоны узнали
+ *   об удалении из тех же «только изменений»;
+ * - чтобы понять, что изменилось у нас, телефон хранит короткий отпечаток
+ *   (хэш) каждой отправленной записи, а не копию всех данных.
  */
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
-const LS = 'malysh.sync';
+const LS = 'malysh.sync';             // { family, merged, dirty }
+const LS_STATE = 'malysh.sync.state'; // { family, cursor, known: { id: hash } }
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // без похожих 0/O, 1/I
+const SAFETY_MS = 10 * 60 * 1000;     // перечитываем последние 10 минут — на случай задержек записи
+const RELISTEN_MS = 20 * 60 * 1000;   // долгая подписка обновляется со свежим cursor
+const BATCH = 400;
 
-let cfg = null;
-try { cfg = JSON.parse(localStorage.getItem(LS) || 'null'); } catch (e) { cfg = null; }
-const saveCfg = () => { try { cfg ? localStorage.setItem(LS, JSON.stringify(cfg)) : localStorage.removeItem(LS); } catch (e) { /* */ } };
+const lsGet = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* */ } };
 
-let F = null, db = null, unsub = null, known = {}, ready = false, startedFor = null;
+let cfg = lsGet(LS);
+let st = lsGet(LS_STATE);
+if (!st || !cfg || st.family !== cfg.family) st = null;
+const saveCfg = () => lsSet(LS, cfg);
+let stTimer = null;
+const saveState = () => { clearTimeout(stTimer); stTimer = setTimeout(() => lsSet(LS_STATE, st), 300); };
+
+let F = null, db = null, unsub = null, ready = false, startedFor = null, listenedAt = 0;
 
 const Sync = {
   configured: !!(FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId),
@@ -27,6 +45,13 @@ window.Sync = Sync;
 
 function notify() { if (window.App) window.App.syncChanged(); }
 function setStatus(s, err) { Sync.status = s; Sync.error = err || ''; notify(); }
+
+// FNV-1a — короткий отпечаток строки
+function hash(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36) + ':' + str.length.toString(36);
+}
 
 function genCode() {
   const b = new Uint8Array(16); crypto.getRandomValues(b);
@@ -57,66 +82,118 @@ async function start() {
   }
 }
 
+const tsMs = t => (t && typeof t.toMillis === 'function' ? t.toMillis() : 0);
+
 function listen() {
-  known = {}; ready = false;
-  if (unsub) unsub();
+  if (unsub) { unsub(); unsub = null; }
+  ready = false; listenedAt = Date.now();
+  if (!st) st = { family: Sync.family, cursor: 0, known: {} };
+  const full = !st.cursor;
   const col = F.collection(db, 'families', Sync.family, 'items');
-  unsub = F.onSnapshot(col, { includeMetadataChanges: true }, snap => {
-    snap.docChanges().forEach(ch => {
-      if (ch.type === 'removed') delete known[ch.doc.id];
-      else known[ch.doc.id] = ch.doc.data().v;
-    });
+  const q = full ? col : F.query(col, F.where('t', '>', F.Timestamp.fromMillis(Math.max(1, st.cursor - SAFETY_MS))));
+  unsub = F.onSnapshot(q, { includeMetadataChanges: true }, snap => {
     if (!ready) {
-      // При первом подключении ждём настоящих данных с сервера, чтобы не затереть чужие записи
-      if (snap.metadata.fromCache && !(cfg && cfg.merged)) { setStatus('connecting'); return; }
+      // Первый ответ ждём именно с сервера, а не из кэша телефона
+      if (snap.metadata.fromCache) { setStatus(navigator.onLine === false ? 'offline' : 'connecting'); return; }
       ready = true;
-      firstMerge();
-    } else if (snap.docChanges().length) {
-      window.App.applyRemote(known);
+      if (full) firstFull(snap.docs); else applyDocs(snap.docs);
+    } else {
+      // removed — запись стёрта из облака насовсем (так удаляли версии до 1.5.0)
+      applyDocs(snap.docChanges().map(ch => (ch.type === 'removed' ? { removed: ch.doc } : ch.doc)));
     }
     setStatus(snap.metadata.fromCache ? 'offline' : 'on');
-  }, err => { setStatus('error', err.code || err.message); });
+  }, err => { ready = false; setStatus('error', err.code || err.message); });
 }
 
-// Первый снимок за сеанс.
-// - первое подключение телефона: добавляем в облако локальные записи, которых там нет;
-// - были правки, пока облако было недоступно (dirty): отправляем их;
-// - иначе просто берём облачную версию (в ней учтены удаления со второго телефона).
-function firstMerge() {
+// Документ облака → { id, v (строка или null, если удалено), t }
+function readDoc(d) {
+  if (d.removed) return { id: d.removed.id, v: null, t: 0 };
+  if (d.metadata && d.metadata.hasPendingWrites) return null; // это наша собственная, ещё не подтверждённая запись
+  const x = d.data() || {};
+  return { id: d.id, v: (x.del || x.v == null) ? null : x.v, t: tsMs(x.t) };
+}
+
+// Полная загрузка: первое подключение телефона (или переход со старой версии)
+function firstFull(docs) {
+  const remote = {};
+  let cursor = 0;
+  docs.forEach(d => { const r = readDoc(d); if (!r) return; remote[r.id] = r.v; cursor = Math.max(cursor, r.t); });
   const local = window.App.flatten();
-  const remoteEmpty = Object.keys(known).length === 0;
-  const dirty = !!(cfg && cfg.dirty);
-  if (!(cfg && cfg.merged) || dirty || remoteEmpty) {
-    for (const [id, v] of Object.entries(local)) {
-      if (!(id in known) || (dirty && known[id] !== v)) { known[id] = v; write(id, v); }
-    }
+  // Старые версии стирали записи из облака насовсем. Если телефон уже был в семье и не правил ничего
+  // без связи — верим облаку целиком. Иначе (новый телефон, правки без связи) — объединяем.
+  const trustRemote = !!(cfg && cfg.merged && !cfg.dirty);
+  const merged = trustRemote ? {} : { ...local };
+  const known = {};
+  for (const [id, v] of Object.entries(remote)) {
+    if (v == null) { delete merged[id]; continue; }
+    merged[id] = v; known[id] = hash(v);
   }
+  st = { family: Sync.family, cursor, known };
   cfg = { ...(cfg || {}), family: Sync.family, merged: true, dirty: false }; saveCfg();
-  window.App.applyRemote(known);
+  window.App.applyRemote(merged);
+  push(); // отправляем то, чего нет в облаке (записи нового телефона)
+  saveState();
 }
 
-function write(id, v) {
-  F.setDoc(F.doc(db, 'families', Sync.family, 'items', id), { v, t: F.serverTimestamp() })
-    .catch(e => setStatus('error', e.code || e.message));
+// Порция изменений из облака
+function applyDocs(docs) {
+  const changes = {};
+  let any = false;
+  docs.forEach(d => {
+    const r = readDoc(d); if (!r) return;
+    if (r.t > st.cursor) st.cursor = r.t;
+    const h = r.v == null ? null : hash(r.v);
+    if (h === (st.known[r.id] || null)) return; // уже знаем (часто — эхо нашей же записи)
+    if (r.v == null) delete st.known[r.id]; else st.known[r.id] = h;
+    changes[r.id] = r.v; any = true;
+  });
+  if (any) window.App.applyChanges(changes);
+  saveState();
+  push(); // правки, сделанные без связи
 }
-function remove(id) {
-  F.deleteDoc(F.doc(db, 'families', Sync.family, 'items', id))
-    .catch(e => setStatus('error', e.code || e.message));
+
+const writeQueue = [];
+let flushing = false;
+async function flush() {
+  if (flushing || !writeQueue.length) return;
+  flushing = true;
+  try {
+    while (writeQueue.length) {
+      const ops = writeQueue.splice(0, BATCH);
+      const b = F.writeBatch(db);
+      ops.forEach(([id, v]) => {
+        const ref = F.doc(db, 'families', Sync.family, 'items', id);
+        b.set(ref, v == null ? { v: null, del: true, t: F.serverTimestamp() } : { v, del: false, t: F.serverTimestamp() });
+      });
+      await b.commit();
+    }
+  } catch (e) {
+    setStatus('error', e.code || e.message);
+  }
+  flushing = false;
 }
 
 // Вызывается приложением после каждого сохранения: отправляем только изменившееся
 function push() {
   if (!Sync.family || !window.App) return;
-  if (!ready || !db) { if (cfg && !cfg.dirty) { cfg.dirty = true; saveCfg(); } return; }
+  if (!ready || !db || !st) { if (cfg && !cfg.dirty) { cfg.dirty = true; saveCfg(); } return; }
   const flat = window.App.flatten();
-  for (const [id, v] of Object.entries(flat)) if (known[id] !== v) { known[id] = v; write(id, v); }
-  for (const id of Object.keys(known)) if (!(id in flat)) { delete known[id]; remove(id); }
+  let n = 0;
+  for (const [id, v] of Object.entries(flat)) {
+    const h = hash(v);
+    if (st.known[id] !== h) { st.known[id] = h; writeQueue.push([id, v]); n++; }
+  }
+  for (const id of Object.keys(st.known)) {
+    if (!(id in flat)) { delete st.known[id]; writeQueue.push([id, null]); n++; }
+  }
+  if (n) { saveState(); flush(); }
 }
 
 async function create() {
   if (!Sync.configured) return;
   Sync.family = genCode();
   cfg = { family: Sync.family, merged: false }; saveCfg();
+  st = null; lsSet(LS_STATE, null);
   startedFor = null; ready = false;
   await start();
 }
@@ -126,6 +203,7 @@ async function join(code) {
   if (!confirm('Подключиться к семье? Записи этого телефона добавятся к общим, а дальше всё будет общим.')) return false;
   Sync.family = c;
   cfg = { family: c, merged: false }; saveCfg();
+  st = null; lsSet(LS_STATE, null);
   startedFor = null; ready = false;
   await start();
   return true;
@@ -133,7 +211,8 @@ async function join(code) {
 function leave() {
   if (unsub) unsub(); unsub = null;
   Sync.family = null; cfg = null; saveCfg();
-  startedFor = null; ready = false; known = {};
+  st = null; lsSet(LS_STATE, null);
+  startedFor = null; ready = false;
   setStatus('off');
 }
 async function share() {
@@ -144,6 +223,12 @@ async function share() {
   try { await navigator.clipboard.writeText(Sync.family); alert('Код скопирован'); } catch (e) { prompt('Скопируйте код:', Sync.family); }
 }
 
-window.addEventListener('online', () => { if (Sync.family && !ready) { startedFor = null; start(); } });
+window.addEventListener('online', () => { if (Sync.family && !db) { startedFor = null; start(); } });
+// Вернулись в приложение спустя долгое время — подписываемся заново с актуальной точки
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !Sync.family) return;
+  if (!db) { startedFor = null; start(); return; }
+  if (Date.now() - listenedAt > RELISTEN_MS) listen();
+});
 if (Sync.family) start();
 notify();
