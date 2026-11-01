@@ -488,3 +488,4 @@ main.view { max-width: 560px; margin: 0 auto; padding-bottom: 24px; }
 .fc-timer { justify-self: start; background: var(--surface); }
 .fc-hint { margin: 10px 0 0; }
 ol.steps { margin: 10px 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; }
+.forecast.night { background: var(--sleep-soft); --fc: var(--sleep); }

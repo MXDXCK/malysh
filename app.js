@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -36,6 +36,7 @@ function load() {
 }
 let S = load();
 function save() {
+  nightCache = null;
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Не получилось сохранить данные'); }
   if (window.Sync) window.Sync.push();
 }
@@ -81,6 +82,7 @@ window.App = {
   },
   // Порция изменений из облака: { id: значение | null (удалено) }
   applyChanges(changes) {
+    nightCache = null;
     const f = flatten(S);
     for (const [id, v] of Object.entries(changes)) { if (v == null) delete f[id]; else f[id] = v; }
     S = unflatten(f);
@@ -347,6 +349,7 @@ function tabbar() {
 }
 let resetScroll = false;
 function render() {
+  nightCache = null;
   applyTheme();
   if (!VIEWS[tab]) tab = 'today';
   const old = $('#scroller'), y = old ? old.scrollTop : 0;
@@ -365,7 +368,46 @@ function tick() {
 
 /* ---- Сон: дневной и ночной ---- */
 // Ночной сон относится к дате утра, когда малыш проснулся (ночь «на 31 октября»)
-function autoKind(ts) { const h = new Date(ts).getHours(); return (h >= 19 || h < 6) ? 'night' : 'day'; }
+// Ночь или день — по режиму семьи (когда обычно укладывают и когда малыш встаёт)
+const minOfDay = ts => { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); };
+const fmtMin = m => { m = ((Math.round(m) % 1440) + 1440) % 1440; return pad(Math.floor(m / 60)) + ':' + pad(m % 60); };
+const parseHM = (str, def) => { const [h, m] = String(str || '').split(':').map(Number); return Number.isFinite(h) ? h * 60 + (m || 0) : def; };
+const kindByHour = e => e.kind || ((h => (h >= 19 || h < 6) ? 'night' : 'day')(new Date(e.start).getHours()));
+let nightCache = null;
+function nightSchedule() {
+  if (nightCache) return nightCache;
+  const cfg = S.profile.sleepCfg || {};
+  // По записям за 14 дней: начало каждой ночи (первая часть) и подъём (конец последней части)
+  const since = Date.now() - 15 * DAY, nights = new Map();
+  S.events.forEach(e => {
+    if (e.type !== 'sleep' || e.end < since || kindByHour(e) !== 'night') return;
+    const k = nightKey(e.start); if (!nights.has(k)) nights.set(k, []); nights.get(k).push(e);
+  });
+  // Ночь = самая длинная часть + соседние части с перерывом до 45 мин (ночные пробуждения).
+  // Короткий вечерний сон за час-два до укладывания в начало ночи не попадает.
+  const full = [...nights.values()].map(parts => {
+    parts.sort((x, y) => x.start - y.start);
+    let i = parts.reduce((bi, e, j) => (e.end - e.start > parts[bi].end - parts[bi].start ? j : bi), 0), a = i, z = i;
+    while (a > 0 && parts[a].start - parts[a - 1].end <= 45 * MIN) a--;
+    while (z < parts.length - 1 && parts[z + 1].start - parts[z].end <= 45 * MIN) z++;
+    return { start: parts[a].start, end: parts[z].end };
+  }).filter(n => n.end - n.start >= 4 * HOUR); // только полноценные ночи
+  // Время укладывания считаем от полудня, чтобы 23:30 и 00:30 оказались рядом
+  const beds = full.map(n => (minOfDay(n.start) + 720) % 1440), wakes = full.map(n => minOfDay(n.end));
+  const learned = full.length >= 2;
+  const lBed = learned ? (median(beds) + 720) % 1440 : null, lWake = learned ? median(wakes) : null;
+  let bed, wake, source;
+  if (cfg.nightMode === 'manual') { bed = parseHM(cfg.bedtime, 20 * 60); wake = parseHM(cfg.wake, 7 * 60); source = 'manual'; }
+  else if (learned) { bed = lBed; wake = lWake; source = 'learned'; }
+  else { bed = 20 * 60; wake = 7 * 60; source = 'default'; }
+  nightCache = { bed, wake, source, n: full.length, lBed, lWake };
+  return nightCache;
+}
+function autoKind(ts) {
+  const ns = nightSchedule(), m = minOfDay(ts);
+  const from = (ns.bed - 60 + 1440) % 1440, to = (ns.wake - 45 + 1440) % 1440; // за час до укладывания … за 45 мин до подъёма
+  return (from > to ? (m >= from || m < to) : (m >= from && m < to)) ? 'night' : 'day';
+}
 const sleepKind = e => e.kind || autoKind(e.start);
 function nightKey(ts) { return new Date(ts).getHours() >= 12 ? dateStr(addDays(ts, 1)) : dateStr(ts); }
 function allSleeps() {
@@ -418,7 +460,7 @@ const WAKE_TABLE = [
   [5, 90, 135, 4, 50], [6, 90, 150, 3, 60], [7, 120, 180, 3, 60], [9, 150, 210, 2, 75],
   [12, 180, 240, 2, 75], [18, 240, 300, 1, 120], [24, 300, 360, 1, 120], [999, 330, 390, 1, 90],
 ];
-const SLEEP_CFG = { mode: 'auto', lo: 90, hi: 135, bedtime: '19:30', remind: 15 };
+const SLEEP_CFG = { mode: 'auto', lo: 90, hi: 135, remind: 15, nightMode: 'auto', bedtime: '21:00', wake: '07:00' };
 const sleepCfg = () => ({ ...SLEEP_CFG, ...(S.profile.sleepCfg || {}) });
 function ageMonths() { return S.profile.birth ? (startOfDay(Date.now()) - parseDate(S.profile.birth).getTime()) / DAY / 30.44 : null; }
 function ageRow() { const m = ageMonths(); return m == null ? null : WAKE_TABLE.find(r => m < r[0]); }
@@ -455,12 +497,24 @@ function wakeRange(type) {
   if (type === 'last') return [r5(lo + sp * 0.4), r5(hi)];
   return [r5(lo + sp * 0.15), r5(hi - sp * 0.1)];
 }
-function bedtimeOn(ts) { const [h, m] = sleepCfg().bedtime.split(':').map(Number); const d = new Date(ts); d.setHours(h || 19, m || 0, 0, 0); return d.getTime(); }
+// Ближайшее «время укладывания на ночь» для дня, в который малыш проснулся
+function bedtimeOn(ts) {
+  const ns = nightSchedule(), d = new Date(ts); d.setHours(0, 0, 0, 0);
+  let t = d.getTime() + ns.bed * MIN;
+  if (ns.bed < 12 * 60) t += DAY; // укладывают после полуночи
+  return t;
+}
+function wakeOn(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime() + nightSchedule().wake * MIN; }
 
 function forecast(now = Date.now()) {
   if (!S.profile.birth || S.timers.sleep) return null;
   const last = latest(S.events.filter(e => e.type === 'sleep'), 'end');
   if (!last || last.end > now || now - last.end > 8 * HOUR) return null;
+  // Проснулся среди ночи (задолго до обычного подъёма) — это ночное пробуждение, а не начало дня
+  if (sleepKind(last) === 'night' && autoKind(now) === 'night') {
+    const ns = nightSchedule(), wk = minOfDay(last.end) < ns.wake ? wakeOn(last.end) : wakeOn(last.end + DAY);
+    if (wk - last.end > 60 * MIN) return { nightWake: true, awake: last.end, wakeAt: wk, stage: 'night' };
+  }
   const cfg = sleepCfg(), row = ageRow(), ps = personalStats();
   const awake = last.end, bed = bedtimeOn(awake);
   const mid = r => (r[0] + r[1]) / 2;
@@ -477,8 +531,11 @@ function forecast(now = Date.now()) {
   // Ночь — около желаемого времени, но в пределах окна бодрствования после последнего сна
   const nightAfter = t => Math.min(Math.max(bed, t + lr[0] * MIN), t + lr[1] * MIN);
   const plan = [];
+  // Если этот дневной сон — последний перед ночью, он короткий, чтобы ночь не сдвинулась
+  const curLen = type === 'last' ? 0 : Math.min(napLen, Math.max(20 * MIN, bed - (from + to) / 2 - mid(lr) * MIN));
+  const shortNap = type !== 'last' && curLen < napLen - 10 * MIN;
   if (type !== 'last') {
-    let t = (from + to) / 2 + napLen;
+    let t = (from + to) / 2 + curLen;
     for (let i = 0; i < 6; i++) {
       if (t + mid(lr) * MIN >= bed - 40 * MIN || noRoomForNap(t)) { plan.push({ kind: 'night', at: nightAfter(t) }); break; }
       const s = t + mid(mr) * MIN;
@@ -486,17 +543,20 @@ function forecast(now = Date.now()) {
       plan.push({ kind: 'day', at: s, short: len < napLen - 10 * MIN }); t = s + len;
     }
   }
-  return { awake, type, next: type === 'last' ? 'night' : 'nap', r, from, to, prepare, stage, plan, personal: cfg.mode === 'auto' && ps.wake ? ps.wake : 0, custom: cfg.mode === 'custom' };
+  return { awake, type, next: type === 'last' ? 'night' : 'nap', shortNap, napMin: Math.round(curLen / MIN), r, from, to, prepare, stage, plan, personal: cfg.mode === 'auto' && ps.wake ? ps.wake : 0, custom: cfg.mode === 'custom' };
 }
 const untilTxt = ms => (ms <= 0 ? 'сейчас' : 'через ' + dur(ms));
 function forecastBlock(f) {
+  if (f && f.nightWake) {
+    return `<div class="forecast night"><div class="fc-top"><small>Ночь</small><b>Подъём обычно ≈ ${hhmm(f.wakeAt)}</b><span>Малыш проснулся ночью — ${dur(Date.now() - f.awake)} назад. Это ночное пробуждение: свет не включайте, укладывайте снова — сон запишется как часть ночи.</span></div></div>`;
+  }
   if (!f) {
     if (!S.profile.birth) return `<p class="hint fc-hint">Укажите дату рождения в настройках — появится прогноз, когда укладывать.</p>`;
     if (!S.events.some(e => e.type === 'sleep')) return `<p class="hint fc-hint">Запишите хотя бы один сон — и приложение подскажет, когда укладывать в следующий раз.</p>`;
     return '';
   }
   const now = Date.now(), nm = f.next === 'night' ? 'ночной сон' : 'дневной сон';
-  const head = { ok: 'Следующий ' + nm, soon: 'Пора готовиться ко сну', now: 'Пора укладывать', late: 'Перегуливает' }[f.stage];
+  const head = { ok: 'Следующий ' + (f.shortNap ? 'короткий ' : '') + nm + (f.shortNap ? ' (~' + f.napMin + ' мин)' : ''), soon: 'Пора готовиться ко сну', now: 'Пора укладывать', late: 'Перегуливает' }[f.stage];
   const sub = {
     ok: `Начните ритуал в ${hhmm(f.prepare)} (${untilTxt(f.prepare - now)})`,
     soon: 'Приглушите свет, уберите активные игры, начните ритуал',
@@ -548,7 +608,7 @@ function fireAlert(title, body) {
   }
 }
 function checkAlerts() {
-  const f = forecast(); if (!f) return;
+  const f = forecast(); if (!f || f.nightWake) return;
   const now = Date.now(), name = S.profile.name || 'малыша';
   let fired = {}; try { fired = JSON.parse(localStorage.getItem('malysh.fired') || '{}'); } catch (e) { /* */ }
   const fresh = t => now >= t && now - t < 15 * MIN; // не трезвоним о давно прошедшем
@@ -575,15 +635,20 @@ async function askNotify() {
   return false;
 }
 function sleepSettingsBlock() {
-  const c = sleepCfg(), a = alertPrefs(), row = ageRow();
+  const c = sleepCfg(), a = alertPrefs(), row = ageRow(), ns = nightSchedule();
   const opts = (sel) => { let o = ''; for (let m = 30; m <= 360; m += 15) o += `<option value="${m}" ${+sel === m ? 'selected' : ''}>${hm(m)}</option>`; return o; };
   const nState = !('Notification' in window) ? 'недоступны на этом устройстве' : Notification.permission === 'granted' ? (a.notify ? 'включены ✓' : 'разрешены, но выключены') : Notification.permission === 'denied' ? 'запрещены в настройках iPhone' : 'не включены';
   return `<div class="settings-block"><h4>Прогноз сна</h4>
     <p>${row ? `По возрасту бодрствование ${hm(row[1])}–${hm(row[2])}, обычно ${row[3]} ${pl(row[3], ['дневной сон', 'дневных сна', 'дневных снов'])}. ` : ''}Прогноз подстраивается под реальные записи сна малыша.</p>
     ${group('Окно бодрствования', seg('sc_mode', [['auto', 'По возрасту'], ['custom', 'Своё']], c.mode))}
     <div class="two">${field('От', `<select name="sc_lo">${opts(c.lo)}</select>`)}${field('До', `<select name="sc_hi">${opts(c.hi)}</select>`)}</div>
-    <div class="two">${field('Ночной сон около', `<input type="time" name="sc_bed" value="${esc(c.bedtime)}">`)}${field('Напомнить за', `<select name="sc_rem">${[5, 10, 15, 20, 30].map(m => `<option value="${m}" ${+c.remind === m ? 'selected' : ''}>${m} мин</option>`).join('')}</select>`)}</div>
-    <p class="muted" style="font-size:13px">«От» и «До» действуют, если выбрано «Своё». Эти настройки общие для всех телефонов семьи.</p>
+    ${field('Напомнить за', `<select name="sc_rem">${[5, 10, 15, 20, 30].map(m => `<option value="${m}" ${+c.remind === m ? 'selected' : ''}>${m} мин</option>`).join('')}</select>`)}
+    <p class="muted" style="font-size:13px">«От» и «До» действуют, если выбрано «Своё».</p>
+    <h4 style="margin-top:6px">Режим ночи</h4>
+    <p>${ns.lBed != null ? `По записям (${ns.n} ${pl(ns.n, ['ночь', 'ночи', 'ночей'])}): укладываете ≈ <b>${fmtMin(ns.lBed)}</b>, встаёт ≈ <b>${fmtMin(ns.lWake)}</b>.` : 'Пока мало записей ночного сна — после 2–3 ночей приложение само узнает ваш режим.'} Ночным считается сон, начатый за час до укладывания и до утреннего подъёма.</p>
+    ${group('Время ночного сна', seg('sc_nm', [['auto', 'Узнавать по записям'], ['manual', 'Задать вручную']], c.nightMode === 'manual' ? 'manual' : 'auto'))}
+    <div class="two">${field('Укладываем около', `<input type="time" name="sc_bed" value="${esc(c.nightMode === 'manual' ? c.bedtime : fmtMin(ns.lBed != null ? ns.lBed : parseHM(c.bedtime, 1260)))}">`)}${field('Встаёт около', `<input type="time" name="sc_wake" value="${esc(c.nightMode === 'manual' ? c.wake : fmtMin(ns.lWake != null ? ns.lWake : parseHM(c.wake, 420)))}">`)}</div>
+    <p class="muted" style="font-size:13px">Время действует, если выбрано «Задать вручную». Настройки прогноза общие для всех телефонов семьи.</p>
     <h4 style="margin-top:6px">Сигналы на этом телефоне</h4>
     <label class="checkline"><input type="checkbox" name="al_sound" ${a.sound ? 'checked' : ''}> Звук, когда пора укладывать</label>
     <p>Уведомления: <b>${nState}</b></p>
@@ -757,13 +822,14 @@ const VIEWS = {
     out += `<section class="hero"><small>${fmtDay.format(now)}</small><h2>${partOfDay(h)}${S.profile.name ? ', ' + esc(S.profile.name) : ''}!</h2></section>`;
     if (!S.profile.birth) out += `<section class="card hello"><h3>Добро пожаловать! 👋</h3><p>Укажите имя и дату рождения малыша — приложение посчитает возраст и составит календарь прививок.</p><button class="btn primary" data-act="settings">Заполнить профиль</button></section>`;
     // Вечером показываем наступающую ночь, днём — прошедшую
-    const evening = h >= 17 || (S.timers.sleep && nightKey(S.timers.sleep.start) !== D && (S.timers.sleep.kind || autoKind(S.timers.sleep.start)) === 'night');
+    const ns0 = nightSchedule(), lateNight = minOfDay(now) < ns0.wake - 30; // глубокая ночь до подъёма — это «эта ночь» сегодняшней даты
+    const evening = (!lateNight && minOfDay(now) >= ns0.bed - 240) || (S.timers.sleep && nightKey(S.timers.sleep.start) !== D && (S.timers.sleep.kind || autoKind(S.timers.sleep.start)) === 'night');
     const nightD = evening ? dateStr(addDays(t0, 1)) : D;
     const { night: n } = sleepsFor(nightD), { day: dd } = sleepsFor(D);
     out += `<section class="card sleep-card"><div class="card-head"><h3>Сон</h3><a href="#sleep" class="link">Все дни ›</a></div>
       ${sleepButton()}
-      <div class="sleep-sum"><div class="night"><small>${evening ? 'Эта ночь' : 'Прошлая ночь'}</small><b>${n.length ? durS(sleepDur(n)) : '—'}</b></div><div class="day"><small>Днём сегодня</small><b>${dd.length ? durS(sleepDur(dd)) : '—'}</b></div></div>
-      ${sleepBlocks(D, nightD, evening ? 'Эта ночь' : 'Прошлая ночь')}</section>`;
+      <div class="sleep-sum"><div class="night"><small>${(evening || lateNight) ? 'Эта ночь' : 'Прошлая ночь'}</small><b>${n.length ? durS(sleepDur(n)) : '—'}</b></div><div class="day"><small>Днём сегодня</small><b>${dd.length ? durS(sleepDur(dd)) : '—'}</b></div></div>
+      ${sleepBlocks(D, nightD, (evening || lateNight) ? 'Эта ночь' : 'Прошлая ночь')}</section>`;
     out += `<section class="quick">
       <button class="q feed" data-act="add-bottle">${I.bottle}<span>Бутылочка</span></button>
       <button class="q solid" data-act="add-solid">${I.bowl}<span>Прикорм</span></button>
@@ -1044,8 +1110,9 @@ function sleepForm(e, preset = {}) {
   if (!v) {
     const D = preset.d || todayStr(), kind = preset.kind || autoKind(Date.now()), now = Date.now();
     if (kind === 'night') {
-      const s = parseDate(D); s.setDate(s.getDate() - 1); s.setHours(21, 0, 0, 0);
-      const en = parseDate(D); en.setHours(7, 0, 0, 0);
+      const ns = nightSchedule();
+      const s = parseDate(D); s.setDate(s.getDate() - 1); s.setHours(Math.floor(ns.bed / 60), ns.bed % 60, 0, 0);
+      const en = parseDate(D); en.setHours(Math.floor(ns.wake / 60), ns.wake % 60, 0, 0);
       v = { start: Math.min(s.getTime(), now - HOUR), end: Math.min(en.getTime(), now), kind };
     } else {
       const s = parseDate(D); s.setHours(13, 0, 0, 0);
@@ -1124,7 +1191,7 @@ function settingsForm() {
     </div>`,
     fd => {
       let lo = +fd.sc_lo, hi = +fd.sc_hi; if (lo > hi) [lo, hi] = [hi, lo];
-      const sc = { mode: fd.sc_mode || 'auto', lo, hi, bedtime: fd.sc_bed || '19:30', remind: +fd.sc_rem || 15 };
+      const sc = { mode: fd.sc_mode || 'auto', lo, hi, remind: +fd.sc_rem || 15, nightMode: fd.sc_nm || 'auto', bedtime: fd.sc_bed || '21:00', wake: fd.sc_wake || '07:00' };
       Object.assign(S.profile, { name: fd.name.trim(), birth: fd.birth, theme: fd.theme, sleepCfg: sc });
       setAlertPrefs({ sound: !!fd.al_sound, shortcut: !!fd.al_shortcut });
       toast('Сохранено');
