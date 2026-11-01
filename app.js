@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.7.1';
+const APP_VERSION = '1.7.2';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -78,7 +78,7 @@ window.App = {
   applyRemote(map) {
     S = unflatten(map);
     try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* */ }
-    if (dlg.open) renderPending = true; else render();
+    if (dlg.open) { renderPending = true; refreshSettingsFields(); } else render();
   },
   // Порция изменений из облака: { id: значение | null (удалено) }
   applyChanges(changes) {
@@ -87,7 +87,7 @@ window.App = {
     for (const [id, v] of Object.entries(changes)) { if (v == null) delete f[id]; else f[id] = v; }
     S = unflatten(f);
     try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* */ }
-    if (dlg.open) renderPending = true; else render();
+    if (dlg.open) { renderPending = true; refreshSettingsFields(); } else render();
   },
   syncChanged() {
     const el = $('#sync-status'); if (el) el.textContent = syncLabel();
@@ -1220,12 +1220,40 @@ function settingsForm() {
       <button type="button" class="btn ghost danger" data-x="clear">Удалить все данные</button>
     </div>`,
     fd => {
-      let lo = +fd.sc_lo, hi = +fd.sc_hi; if (lo > hi) [lo, hi] = [hi, lo];
-      const sc = { mode: fd.sc_mode || 'auto', lo, hi, remind: +fd.sc_rem || 15, nightMode: fd.sc_nm || 'auto', bedtime: fd.sc_bed || '21:00', wake: fd.sc_wake || '07:00' };
-      Object.assign(S.profile, { name: fd.name.trim(), birth: fd.birth, theme: fd.theme, sleepCfg: sc });
+      applySettings(fd);
       setAlertPrefs({ sound: !!fd.al_sound, shortcut: !!fd.al_shortcut });
       toast('Сохранено');
     });
+  settingsInit = formValues();
+}
+
+// Настройки сохраняют только то, что вы поменяли в форме.
+// Иначе форма, открытая до прихода данных с другого телефона (например, сразу после «Присоединиться»),
+// записала бы в общее облако пустое имя и дату рождения.
+let settingsInit = null;
+function formValues() { const f = dlg.querySelector('form'); return f ? Object.fromEntries(new FormData(f)) : {}; }
+function applySettings(fd) {
+  const init = settingsInit || {};
+  const changed = k => fd[k] !== undefined && String(fd[k]) !== String(init[k] ?? '');
+  const P = {};
+  if (changed('name')) P.name = String(fd.name).trim();
+  if (changed('birth')) P.birth = fd.birth;
+  if (changed('theme')) P.theme = fd.theme;
+  const sc = { ...sleepCfg() };
+  let scDirty = false;
+  const set = (key, val) => { sc[key] = val; scDirty = true; };
+  if (changed('sc_mode')) set('mode', fd.sc_mode);
+  // Включили «Своё» — берём окно из формы целиком; иначе только изменённые поля
+  if (changed('sc_lo') || (changed('sc_mode') && fd.sc_mode === 'custom')) set('lo', +fd.sc_lo);
+  if (changed('sc_hi') || (changed('sc_mode') && fd.sc_mode === 'custom')) set('hi', +fd.sc_hi);
+  if (changed('sc_rem')) set('remind', +fd.sc_rem);
+  if (changed('sc_nm')) set('nightMode', fd.sc_nm);
+  if (changed('sc_bed') || (changed('sc_nm') && fd.sc_nm === 'manual')) set('bedtime', fd.sc_bed);
+  if (changed('sc_wake') || (changed('sc_nm') && fd.sc_nm === 'manual')) set('wake', fd.sc_wake);
+  if (scDirty) { if (+sc.lo > +sc.hi) [sc.lo, sc.hi] = [sc.hi, sc.lo]; P.sleepCfg = sc; }
+  if (Object.keys(P).length) Object.assign(S.profile, P);
+  settingsInit = { ...init, ...fd };
+  return Object.keys(P).length > 0;
 }
 
 function syncBlock() {
@@ -1245,11 +1273,17 @@ function syncBlock() {
 }
 
 // Сохраняем имя/дату/тему, введённые в настройках, перед перерисовкой шторки
+// Пришли данные с другого телефона, пока открыты Настройки: обновляем поля, которые вы не трогали
+function refreshSettingsFields() {
+  const f = dlg.querySelector('form'); if (!f || !f.elements.birth || !settingsInit) return;
+  ['name', 'birth'].forEach(k => {
+    const el = f.elements[k], v = S.profile[k] || '';
+    if (el && el.value === String(settingsInit[k] ?? '') && el.value !== v) { el.value = v; settingsInit[k] = v; }
+  });
+}
 function keepSettingsFields() {
   const f = dlg.querySelector('form'); if (!f || !f.elements.birth) return;
-  const fd = Object.fromEntries(new FormData(f));
-  Object.assign(S.profile, { name: (fd.name || '').trim(), birth: fd.birth || '', theme: fd.theme || S.profile.theme });
-  save();
+  if (applySettings(formValues())) save();
 }
 
 /* ---------------- Резервная копия ---------------- */
