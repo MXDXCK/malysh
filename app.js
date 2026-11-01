@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.7.4';
+const APP_VERSION = '1.8.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -842,6 +842,42 @@ function stoolView() {
   return out;
 }
 
+/* ---- Норма питания (смесь + прикорм) ---- */
+// Объёмный метод: суточный объём питания — доля от массы тела, не больше 1000 мл.
+// Возраст (до N мес): доля веса, кормлений в сутки, мл за одно кормление (от–до)
+const FEED_TABLE = [
+  [1.5, 5, 7, 90, 150], [4, 6, 6, 120, 180], [6, 7, 5, 180, 210], [9, 8, 5, 210, 240], [12.5, 9, 4.5, 210, 240],
+];
+const FEED_MAX = 1000;
+function lastWeight() {
+  const g = [...S.growth].filter(x => +x.weight > 0).sort((a, b) => a.date.localeCompare(b.date));
+  return g.length ? g[g.length - 1] : null;
+}
+function feedNorm() {
+  const m = ageMonths(); if (m == null || m < 0 || m >= 12.5) return null;
+  const row = FEED_TABLE.find(r => m < r[0]);
+  const [, frac, feeds, perLo, perHi] = row;
+  const w = lastWeight();
+  const r10 = v => Math.round(v / 10) * 10;
+  let total, basis;
+  if (w) { total = Math.min(FEED_MAX, +w.weight * 1000 / frac); basis = `1/${frac} веса ${String(+w.weight).replace('.', ',')} кг`; }
+  else { total = Math.min(FEED_MAX, feeds * (perLo + perHi) / 2); basis = 'по возрасту — добавьте вес для точности'; }
+  const wAge = w ? Math.round((startOfDay(Date.now()) - parseDate(w.date).getTime()) / DAY) : null;
+  return { total: r10(total), capped: total >= FEED_MAX, frac, feeds, perLo, perHi, weight: w, wAge, basis };
+}
+// Сколько съедено сегодня: смесь (мл) + прикорм (г) — в объёмном методе они считаются вместе
+function eatenToday() {
+  const t0 = startOfDay(Date.now());
+  const ev = S.events.filter(e => e.start >= t0);
+  const ml = sum(ev.filter(e => e.type === 'bottle'), e => +e.ml);
+  const g = sum(ev.filter(e => e.type === 'solid'), e => +e.grams || 0);
+  return { ml, g, total: ml + g, bottles: ev.filter(e => e.type === 'bottle').length };
+}
+function normBar(eaten, total) {
+  const pct = Math.min(100, Math.round(eaten / total * 100));
+  return `<div class="norm-bar ${pct >= 100 ? 'full' : ''}"><i style="width:${pct}%"></i></div>`;
+}
+
 /* ---- Экраны ---- */
 let sleepDay = todayStr();
 const VIEWS = {
@@ -871,7 +907,11 @@ const VIEWS = {
       <button class="q growth" data-act="add-growth">${I.chart}<span>Рост и вес</span></button>
     </section>`;
     out += `<section class="stats">
-      <div class="stat feed"><small>Бутылочек сегодня</small><b>${bottles.length}</b><span>${ml ? ml + ' мл всего' : 'пока не было'}</span></div>
+      ${(() => {
+        const nm = feedNorm(), et = eatenToday();
+        if (!nm) return `<div class="stat feed"><small>Бутылочек сегодня</small><b>${bottles.length}</b><span>${ml ? ml + ' мл всего' : 'пока не было'}</span></div>`;
+        return `<button class="stat feed" data-tab="feed"><small>Бутылочек сегодня</small><b>${bottles.length}</b><span>${et.ml} мл${et.g ? ' + ' + et.g + ' г' : ''} из ≈${nm.total}</span>${normBar(et.total, nm.total)}</button>`;
+      })()}
       <div class="stat"><small>Последнее кормление</small><b>${lastFeed ? hhmm(lastFeed.start) : '—'}</b><span>${lastFeed ? ago(lastFeed.start) : '&nbsp;'}</span></div>
       <button class="stat stool" data-tab="stool"><small>Стул сегодня</small><b>${stoolsToday.length} ${pl(stoolsToday.length, ['раз', 'раза', 'раз'])}</b><span>${lastStool ? 'последний ' + (dayKey(lastStool.start) === D ? 'в ' + hhmm(lastStool.start) : fmtShort.format(lastStool.start)) : 'пока не было'}</span></button>
       ${lastStool && stoolWarn(lastStool) && lastStool.start > now - 3 * DAY ? `<button class="stat warn-stat" data-tab="stool"><small>Стул</small><b>⚠︎</b><span>был необычный — посмотрите</span></button>` : ''}
@@ -912,6 +952,24 @@ const VIEWS = {
         <div class="stat feed"><small>Бутылочек</small><b>${today.length}</b><span>за день</span></div>
         <div class="stat"><small>Последняя</small><b>${last ? hhmm(last.start) : '—'}</b><span>${last ? ago(last.start) : '&nbsp;'}</span></div></div>
       <button class="btn primary big-add" data-act="add-bottle">${I.plus} Записать бутылочку</button></section>`;
+    const nm = feedNorm();
+    if (nm) {
+      const et = eatenToday(), left = Math.max(0, nm.total - et.total);
+      const nLeft = left ? [Math.max(1, Math.floor(left / nm.perHi)), Math.max(1, Math.ceil(left / nm.perLo))] : null;
+      out += `<section class="card norm-card"><h3>Норма на день</h3>
+        <div class="norm-top"><b>${et.total}</b><span>из ≈ ${nm.total} мл</span></div>
+        ${normBar(et.total, nm.total)}
+        <p class="norm-line">${et.ml} мл смеси${et.g ? ` + ${et.g} г прикорма` : ''} · ${left ? `осталось ≈ ${left} мл — ${nLeft[0] === nLeft[1] ? nLeft[0] : nLeft[0] + '–' + nLeft[1]} ${pl(nLeft[1], ['кормление', 'кормления', 'кормлений'])} по ${nm.perLo}–${nm.perHi} мл` : 'норма на сегодня набрана'}</p>
+        <div class="norm-facts">
+          <span><small>Суточный объём</small><b>≈ ${nm.total} мл</b><em>${nm.basis}${nm.capped ? ', не больше 1 л' : ''}</em></span>
+          <span><small>Кормлений</small><b>${nm.feeds}</b><em>в сутки для возраста</em></span>
+          <span><small>За раз</small><b>${nm.perLo}–${nm.perHi} мл</b><em>обычно в этом возрасте</em></span>
+        </div>
+        ${nm.weight && nm.wAge > 30 ? `<p class="norm-warn">Вес взят из замера ${fmtShort.format(parseDate(nm.weight.date))} (${nm.wAge} дн. назад) — <button class="linkbtn" data-act="add-growth">добавьте свежий вес</button>, чтобы норма была точнее.</p>` : ''}
+        ${!nm.weight ? `<p class="norm-warn"><button class="linkbtn" data-act="add-growth">Добавьте вес малыша</button> — норма будет рассчитана точнее.</p>` : ''}
+        <p class="hint" style="margin:8px 0 0">${S.events.some(e => e.type === 'solid') ? 'Прикорм входит в суточный объём: чем больше съедено прикорма, тем меньше нужно смеси. ' : ''}Это ориентир (объёмный метод расчёта питания). Кормите по аппетиту и не заставляйте допивать — точную норму согласуйте с педиатром.</p>
+      </section>`;
+    }
     const days = lastDays(7).map(t => ({ t, total: sum(S.events.filter(e => e.type === 'bottle' && startOfDay(e.start) === t), e => +e.ml) }));
     out += `<section class="card"><h3>Смесь за неделю, мл</h3>${bars(days, v => v, 'feedbars')}</section>`;
     out += history(S.events.filter(isFeed), 'Пока нет записей о кормлениях');

@@ -501,3 +501,22 @@ ol.steps { margin: 10px 0; padding-left: 20px; display: grid; gap: 6px; font-siz
 .wk-legend { margin: 10px 2px 0; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; line-height: 1.6; }
 .wk-legend .wk { margin: 0; background: var(--surface-2); }
 .wk-legend .wk.long { background: var(--danger-soft); }
+
+/* ---- 1.8.0: норма питания ---- */
+.norm-bar { height: 6px; border-radius: 99px; background: var(--accent-soft); overflow: hidden; margin-top: 6px; }
+.norm-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.norm-bar.full i { background: var(--ok); }
+.stat .norm-bar { width: 100%; }
+.norm-card .norm-bar { height: 10px; margin: 6px 0 8px; }
+.norm-top { display: flex; align-items: baseline; gap: 8px; }
+.norm-top b { font-size: 30px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+.norm-top span { color: var(--muted); font-weight: 700; }
+.norm-line { font-size: 14px; font-weight: 600; }
+.norm-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.norm-facts span { background: var(--surface-2); border-radius: 12px; padding: 8px 10px; display: grid; gap: 1px; min-width: 0; }
+.norm-facts small { font-size: 11.5px; color: var(--muted); font-weight: 700; }
+.norm-facts b { font-size: 15px; font-weight: 800; }
+.norm-facts em { font-style: normal; font-size: 11px; color: var(--muted); line-height: 1.25; }
+.norm-warn { margin-top: 10px; font-size: 13px; background: var(--growth-soft); padding: 8px 10px; border-radius: 12px; }
+.linkbtn { color: var(--accent); font-weight: 800; text-decoration: underline; font-size: inherit; }
+@media (max-width: 360px) { .norm-facts { grid-template-columns: 1fr 1fr; } }
