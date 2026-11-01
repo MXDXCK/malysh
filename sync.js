@@ -31,15 +31,18 @@ const saveCfg = () => lsSet(LS, cfg);
 let stTimer = null;
 const saveState = () => { clearTimeout(stTimer); stTimer = setTimeout(() => lsSet(LS_STATE, st), 300); };
 
-let F = null, db = null, unsub = null, ready = false, startedFor = null, listenedAt = 0;
+let F = null, db = null, unsub = null, ready = false, startedFor = null, listenedAt = 0, starting = false;
+const inflight = {}; // id → отпечаток, который сейчас отправляется (ещё без подтверждения облака)
+const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(what + ': нет ответа'), { code: 'timeout' })), ms))]);
 
 const Sync = {
   configured: !!(FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId),
   family: cfg && cfg.family || null,
   status: 'off',
   error: '',
+  lastSync: (lsGet(LS_STATE) || {}).lastSync || 0,
   push,
-  create, join, leave, share,
+  create, join, leave, share, reconnect,
 };
 window.Sync = Sync;
 
@@ -60,19 +63,26 @@ function genCode() {
 }
 const normCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/(.{4})(?=.)/g, '$1-');
 
+let auth = null;
 async function start() {
-  if (!Sync.configured || !Sync.family || startedFor === Sync.family) return;
-  startedFor = Sync.family;
+  if (!Sync.configured || !Sync.family || startedFor === Sync.family || starting) return;
+  startedFor = Sync.family; starting = true;
   setStatus(navigator.onLine === false ? 'offline' : 'connecting');
   try {
-    const [appMod, authMod, fsMod] = await Promise.all([
+    const [appMod, authMod, fsMod] = await withTimeout(Promise.all([
       import(SDK + 'firebase-app.js'), import(SDK + 'firebase-auth.js'), import(SDK + 'firebase-firestore.js'),
-    ]);
+    ]), 30000, 'загрузка Firebase');
     F = fsMod;
     const app = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(FIREBASE_CONFIG);
-    await authMod.signInAnonymously(authMod.getAuth(app));
+    // Вход и кэш — без IndexedDB: в Safari на iPhone она «засыпает» после сворачивания приложения,
+    // и синхронизация зависает на «подключаюсь…». Свою копию записей приложение хранит само.
+    if (!auth) {
+      try { auth = authMod.initializeAuth(app, { persistence: [authMod.browserLocalPersistence, authMod.inMemoryPersistence] }); }
+      catch (e) { auth = authMod.getAuth(app); }
+    }
+    if (!auth.currentUser) await withTimeout(authMod.signInAnonymously(auth), 20000, 'вход');
     if (!db) {
-      try { db = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
+      try { db = F.initializeFirestore(app, { localCache: F.memoryLocalCache() }); }
       catch (e) { db = F.getFirestore(app); }
     }
     listen();
@@ -80,6 +90,14 @@ async function start() {
     startedFor = null;
     setStatus(navigator.onLine === false ? 'offline' : 'error', e && (e.code || e.message));
   }
+  starting = false;
+}
+
+// Переподключиться: заново подписаться на изменения (а если не загрузились — начать сначала)
+function reconnect() {
+  if (!Sync.family) return;
+  if (db && F) { setStatus('connecting'); listen(); }
+  else { startedFor = null; start(); }
 }
 
 const tsMs = t => (t && typeof t.toMillis === 'function' ? t.toMillis() : 0);
@@ -101,6 +119,7 @@ function listen() {
       // removed — запись стёрта из облака насовсем (так удаляли версии до 1.5.0)
       applyDocs(snap.docChanges().map(ch => (ch.type === 'removed' ? { removed: ch.doc } : ch.doc)));
     }
+    if (!snap.metadata.fromCache) { Sync.lastSync = Date.now(); if (st) { st.lastSync = Sync.lastSync; saveState(); } }
     setStatus(snap.metadata.fromCache ? 'offline' : 'on');
   }, err => { ready = false; setStatus('error', err.code || err.message); });
 }
@@ -153,22 +172,33 @@ function applyDocs(docs) {
 }
 
 const writeQueue = [];
-let flushing = false;
+let flushing = false, retryTimer = null;
 async function flush() {
   if (flushing || !writeQueue.length) return;
   flushing = true;
-  try {
-    while (writeQueue.length) {
-      const ops = writeQueue.splice(0, BATCH);
+  while (writeQueue.length) {
+    const ops = writeQueue.splice(0, BATCH);
+    try {
       const b = F.writeBatch(db);
       ops.forEach(([id, v]) => {
         const ref = F.doc(db, 'families', Sync.family, 'items', id);
         b.set(ref, v == null ? { v: null, del: true, t: F.serverTimestamp() } : { v, del: false, t: F.serverTimestamp() });
       });
-      await b.commit();
+      await withTimeout(b.commit(), 30000, 'отправка');
+      // Облако подтвердило — теперь запись считается синхронизированной
+      ops.forEach(([id, v, h]) => {
+        if (inflight[id] === h) delete inflight[id];
+        if (v == null) { if (st.known[id] === undefined || h === 'del') delete st.known[id]; } else st.known[id] = h;
+      });
+      saveState();
+    } catch (e) {
+      // Не получилось (нет связи) — вернём в очередь при следующей попытке
+      ops.forEach(([id, , h]) => { if (inflight[id] === h) delete inflight[id]; });
+      writeQueue.length = 0;
+      setStatus(navigator.onLine === false || (e && e.code === 'timeout') ? 'offline' : 'error', e && (e.code || e.message));
+      clearTimeout(retryTimer); retryTimer = setTimeout(push, 20000);
+      break;
     }
-  } catch (e) {
-    setStatus('error', e.code || e.message);
   }
   flushing = false;
 }
@@ -181,12 +211,12 @@ function push() {
   let n = 0;
   for (const [id, v] of Object.entries(flat)) {
     const h = hash(v);
-    if (st.known[id] !== h) { st.known[id] = h; writeQueue.push([id, v]); n++; }
+    if (st.known[id] !== h && inflight[id] !== h) { inflight[id] = h; writeQueue.push([id, v, h]); n++; }
   }
   for (const id of Object.keys(st.known)) {
-    if (!(id in flat)) { delete st.known[id]; writeQueue.push([id, null]); n++; }
+    if (!(id in flat) && inflight[id] !== 'del') { inflight[id] = 'del'; writeQueue.push([id, null, 'del']); n++; }
   }
-  if (n) { saveState(); flush(); }
+  if (n) flush();
 }
 
 async function create() {
@@ -228,7 +258,13 @@ window.addEventListener('online', () => { if (Sync.family && !db) { startedFor =
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !Sync.family) return;
   if (!db) { startedFor = null; start(); return; }
-  if (Date.now() - listenedAt > RELISTEN_MS) listen();
+  if (!ready || Date.now() - listenedAt > RELISTEN_MS) listen();
 });
+// Сторож: если подключение не установилось за 25 секунд — пробуем заново
+setInterval(() => {
+  if (!Sync.family || document.hidden || starting) return;
+  if (!db) { if (Sync.status !== 'connecting') { startedFor = null; start(); } return; }
+  if (!ready && Date.now() - listenedAt > 25000) listen();
+}, 10000);
 if (Sync.family) start();
 notify();

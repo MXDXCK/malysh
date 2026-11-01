@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.7.2';
+const APP_VERSION = '1.7.3';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -97,11 +97,12 @@ window.App = {
 function syncLabel() {
   const sy = window.Sync; if (!sy) return '';
   const err = String(sy.error || '');
-  const why = /operation-not-allowed|admin-restricted/.test(err) ? 'в Firebase не включён анонимный вход (Authentication → Sign-in method → Anonymous)'
+  const why = /timeout/.test(err) ? 'облако не отвечает — пробую снова' : /operation-not-allowed|admin-restricted/.test(err) ? 'в Firebase не включён анонимный вход (Authentication → Sign-in method → Anonymous)'
     : /permission-denied/.test(err) ? 'нет доступа — проверьте правила Firestore (вкладка Rules → Publish)'
     : /not-found|NOT_FOUND/.test(err) ? 'база Firestore не найдена — создайте базу (default)'
     : 'ошибка: ' + (err || 'неизвестно');
-  return { off: 'выключена', connecting: 'подключаюсь…', on: 'работает ✓', offline: 'нет интернета — изменения отправятся позже', error: why }[sy.status] || sy.status;
+  const lastTxt = sy.lastSync ? ' · обновлено ' + (dayKey(sy.lastSync) === todayStr() ? 'в ' + hhmm(sy.lastSync) : fmtShort.format(sy.lastSync) + ' ' + hhmm(sy.lastSync)) : '';
+  return ({ off: 'выключена', connecting: 'подключаюсь…', on: 'работает ✓', offline: 'нет связи — изменения отправятся позже', error: why }[sy.status] || sy.status) + lastTxt;
 }
 
 /* ---------------- Даты и форматирование ---------------- */
@@ -1268,6 +1269,7 @@ function syncBlock() {
   return `<div class="settings-block">${title}
     <p>Статус: <b id="sync-status">${syncLabel()}</b></p>
     <label class="field"><span>Код семьи — введите его на втором телефоне</span><input readonly value="${esc(sy.family)}" class="code" onclick="this.select()"></label>
+    <button type="button" class="btn" data-x="sync-reconnect">${I.refresh} Переподключить</button>
     <button type="button" class="btn" data-x="sync-share">Отправить код</button>
     <button type="button" class="btn ghost danger" data-x="sync-off">Отключить на этом телефоне</button></div>`;
 }
@@ -1376,6 +1378,7 @@ document.addEventListener('click', e => {
     return window.Sync && window.Sync.join(code).then(ok => { if (ok) settingsForm(); });
   }
   if (d.x === 'sync-share') return window.Sync && window.Sync.share();
+  if (d.x === 'sync-reconnect') { if (window.Sync) { window.Sync.reconnect(); toast('Переподключаюсь…'); } return; }
   if (d.x === 'sync-off') {
     if (confirm('Отключить синхронизацию на этом телефоне? Записи останутся, но перестанут обновляться.')) { window.Sync.leave(); settingsForm(); }
     return;
