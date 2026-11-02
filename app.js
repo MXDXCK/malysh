@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -46,7 +46,11 @@ function save() {
 // одновременно добавлять записи, и ничего не перезапишется.
 function flatten(st = S) {
   const f = {};
-  f.profile = JSON.stringify({ name: st.profile.name, birth: st.profile.birth, ...(st.profile.sleepCfg ? { sleepCfg: st.profile.sleepCfg } : {}) });
+  {
+    const { name, birth, sleepCfg, theme, ...rest } = st.profile;
+    const extra = {}; Object.keys(rest).sort().forEach(k => { if (rest[k] !== undefined && rest[k] !== '') extra[k] = rest[k]; });
+    f.profile = JSON.stringify({ name, birth, ...(sleepCfg ? { sleepCfg } : {}), ...extra });
+  }
   if (st.timers && Object.keys(st.timers).length) f.timers = JSON.stringify(st.timers);
   st.events.forEach(e => { f['ev_' + e.id] = JSON.stringify(e); });
   st.growth.forEach(g => { f['gr_' + g.id] = JSON.stringify(g); });
@@ -61,7 +65,7 @@ function unflatten(map) {
   for (const [id, raw] of Object.entries(map)) {
     let v; try { v = JSON.parse(raw); } catch (e) { continue; }
     if (!v) continue;
-    if (id === 'profile') Object.assign(st.profile, { name: v.name || '', birth: v.birth || '' }, v.sleepCfg ? { sleepCfg: v.sleepCfg } : {});
+    if (id === 'profile') { const { theme, ...pub } = v; Object.assign(st.profile, pub, { name: v.name || '', birth: v.birth || '' }); }
     else if (id === 'timers') st.timers = v;
     else if (id.startsWith('ev_')) st.events.push(v);
     else if (id.startsWith('gr_')) st.growth.push(v);
@@ -1050,7 +1054,8 @@ const VIEWS = {
       const [a, b] = lastOf(k);
       const delta = a && b ? a[k] - b[k] : 0;
       const dTxt = k === 'weight' ? Math.round(delta * 1000) + ' г' : num(delta, 1) + ' см';
-      return `<div class="stat growth"><small>${l}</small><b>${a ? num(a[k], d) : '—'}</b><span>${a ? u : '&nbsp;'}${delta ? ` <span class="delta">${delta > 0 ? '+' : ''}${dTxt}</span>` : ''}</span></div>`;
+      const wp = a ? whoPercentile(k, a[k], a.date) : null;
+      return `<div class="stat growth"><small>${l}</small><b>${a ? num(a[k], d) : '—'}</b><span>${a ? u : '&nbsp;'}${delta ? ` <span class="delta">${delta > 0 ? '+' : ''}${dTxt}</span>` : ''}</span>${wp ? `<em class="who-pill ${wp.cls}">${wp.cls === 'ok' ? '✓ ' : ''}${pctTxt(wp)}%</em>` : ''}</div>`;
     }).join('')}</section>`;
     h += `<div class="actions-row"><button class="btn soft growth" data-act="add-growth">${I.plus} Новый замер</button></div>`;
     h += `<section class="card"><div class="metric-tabs">${Object.entries(M).map(([k, [l]]) => `<button data-metric="${k}" class="${metric === k ? 'on' : ''}">${l}</button>`).join('')}</div>${growthChart(g, metric, M[metric])}</section>`;
@@ -1097,25 +1102,83 @@ function ageAt(date) {
   let m = (d.getFullYear() - b.getFullYear()) * 12 + d.getMonth() - b.getMonth(); if (d.getDate() < b.getDate()) m--;
   return m < 24 ? m + ' мес.' : Math.floor(m / 12) + ' ' + pl(Math.floor(m / 12), ['год', 'года', 'лет']);
 }
+/* ---- Стандарты роста ВОЗ ---- */
+const WHO_KEY = { weight: 'weight', height: 'height', head: 'head' };
+const Z3 = 1.8808, Z15 = 1.0364; // 3-й и 97-й, 15-й и 85-й перцентили
+function whoLMS(k, sex, day) {
+  const rows = window.WHO_GROWTH && window.WHO_GROWTH[WHO_KEY[k]] && window.WHO_GROWTH[WHO_KEY[k]][sex];
+  if (!rows || day < 0 || day > rows[rows.length - 1][0]) return null;
+  let i = 1; while (i < rows.length - 1 && rows[i][0] < day) i++;
+  const a = rows[i - 1], b = rows[i], f = b[0] === a[0] ? 0 : Math.max(0, Math.min(1, (day - a[0]) / (b[0] - a[0])));
+  return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f];
+}
+const lmsVal = ([L, M, Sd], z) => (L ? M * Math.pow(1 + L * Sd * z, 1 / L) : M * Math.exp(Sd * z));
+const lmsZ = ([L, M, Sd], x) => (L ? (Math.pow(x / M, L) - 1) / (L * Sd) : Math.log(x / M) / Sd);
+function normCdf(z) { // Абрамовиц–Стиган
+  const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989423 * Math.exp(-z * z / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+}
+const ageDays = date => Math.round((parseDate(date).getTime() - parseDate(S.profile.birth).getTime()) / DAY);
+// Перцентиль замера по ВОЗ: { pct, cls: 'ok' | 'low' | 'high' } или null
+function whoPercentile(k, value, date) {
+  const sex = S.profile.sex; if (!S.profile.birth || !sex || !value) return null;
+  const lms = whoLMS(k, sex, ageDays(date)); if (!lms) return null;
+  const z = lmsZ(lms, +value), pct = normCdf(z) * 100;
+  return { pct, z, cls: pct < 3 ? 'low' : pct > 97 ? 'high' : 'ok' };
+}
+const pctTxt = p => (p.pct < 1 ? '<1' : p.pct > 99 ? '>99' : Math.round(p.pct));
+
 function growthChart(g, k, [label, unit, dec]) {
-  const pts = g.filter(x => x[k]).map(x => ({ t: parseDate(x.date).getTime(), v: +x[k] }));
-  if (!pts.length) return `<p class="empty">Нет данных: ${label.toLowerCase()}</p>`;
-  const W = 320, H = 170, L = 38, R = 12, T = 12, B = 26;
-  let t0 = pts[0].t, t1 = pts[pts.length - 1].t; if (t1 === t0) { t0 -= DAY * 15; t1 += DAY * 15; }
-  let v0 = Math.min(...pts.map(p => p.v)), v1 = Math.max(...pts.map(p => p.v));
-  const padV = (v1 - v0) * 0.15 || v1 * 0.05 || 1; v0 -= padV; v1 += padV;
-  const x = t => L + (t - t0) / (t1 - t0) * (W - L - R);
-  const y = v => T + (1 - (v - v0) / (v1 - v0)) * (H - T - B);
+  const sex = S.profile.sex, birth = S.profile.birth, hasWho = !!(birth && sex && window.WHO_GROWTH);
   const fmt = v => v.toFixed(dec).replace('.', ',');
-  const ticks = [v0 + padV, (v0 + v1) / 2, v1 - padV].filter((v, i, a) => i === 0 || Math.abs(v - a[i - 1]) > 1e-9);
-  const xl = t => S.profile.birth ? ageAt(dateStr(t)) || fmtShort.format(t) : fmtShort.format(t);
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="График: ${label}">
-    ${ticks.map(v => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`).join('')}
-    <polyline class="line" points="${pts.map(p => x(p.t) + ',' + y(p.v)).join(' ')}"/>
-    ${pts.map(p => `<circle class="pt" cx="${x(p.t)}" cy="${y(p.v)}" r="4"/>`).join('')}
-    <text x="${x(pts[0].t)}" y="${H - 6}" text-anchor="${pts.length > 1 ? 'start' : 'middle'}">${xl(pts[0].t)}</text>
-    ${pts.length > 1 ? `<text x="${x(pts[pts.length - 1].t)}" y="${H - 6}" text-anchor="end">${xl(pts[pts.length - 1].t)}</text>` : ''}
-  </svg><p class="hint" style="margin:6px 0 0">${label}, ${unit}</p>`;
+  const W = 320, H = 190, L = 38, R = 12, T = 12, B = 26;
+  if (!hasWho) {
+    const pts = g.filter(x => x[k]).map(x => ({ t: parseDate(x.date).getTime(), v: +x[k] }));
+    const ask = `<p class="norm-warn" style="margin-top:10px">${!birth ? 'Укажите дату рождения' : 'Укажите пол малыша'} в <button class="linkbtn" data-act="settings">настройках</button> — на графике появится коридор нормы ВОЗ.</p>`;
+    if (!pts.length) return `<p class="empty">Нет данных: ${label.toLowerCase()}</p>` + ask;
+    let t0 = pts[0].t, t1 = pts[pts.length - 1].t; if (t1 === t0) { t0 -= DAY * 15; t1 += DAY * 15; }
+    let v0 = Math.min(...pts.map(p => p.v)), v1 = Math.max(...pts.map(p => p.v));
+    const padV = (v1 - v0) * 0.15 || v1 * 0.05 || 1; v0 -= padV; v1 += padV;
+    const x = t => L + (t - t0) / (t1 - t0) * (W - L - R), y = v => T + (1 - (v - v0) / (v1 - v0)) * (H - T - B);
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="График: ${label}">
+      ${[v0 + padV, v1 - padV].map(v => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`).join('')}
+      <polyline class="line" points="${pts.map(p => x(p.t) + ',' + y(p.v)).join(' ')}"/>
+      ${pts.map(p => `<circle class="pt" cx="${x(p.t)}" cy="${y(p.v)}" r="4"/>`).join('')}
+    </svg><p class="hint" style="margin:6px 0 0">${label}, ${unit}</p>` + ask;
+  }
+  // Ось X — возраст в днях, с коридором нормы ВОЗ
+  const pts = g.filter(x => x[k] && x.date >= birth).map(x => ({ a: ageDays(x.date), v: +x[k], date: x.date }));
+  const nowA = ageDays(todayStr());
+  const ages = pts.map(p => p.a).concat(nowA);
+  let a0 = Math.max(0, Math.min(...ages) - 30), a1 = Math.min(1826, Math.max(...ages) + 45);
+  if (a1 - a0 < 150) a0 = Math.max(0, a1 - 150);
+  const N = 48, samp = [];
+  for (let i = 0; i <= N; i++) { const a = a0 + (a1 - a0) * i / N, lms = whoLMS(k, sex, a); if (lms) samp.push({ a, lo3: lmsVal(lms, -Z3), lo15: lmsVal(lms, -Z15), m: lms[1], hi15: lmsVal(lms, Z15), hi97: lmsVal(lms, Z3) }); }
+  if (!samp.length) return `<p class="empty">Нет данных ВОЗ для этого возраста</p>`;
+  let v0 = Math.min(...samp.map(s => s.lo3), ...pts.map(p => p.v)), v1 = Math.max(...samp.map(s => s.hi97), ...pts.map(p => p.v));
+  const pad = (v1 - v0) * 0.06; v0 -= pad; v1 += pad;
+  const x = a => L + (a - a0) / (a1 - a0) * (W - L - R), y = v => T + (1 - (v - v0) / (v1 - v0)) * (H - T - B);
+  const band = (lo, hi) => samp.map(s => `${x(s.a).toFixed(1)},${y(s[hi]).toFixed(1)}`).concat([...samp].reverse().map(s => `${x(s.a).toFixed(1)},${y(s[lo]).toFixed(1)}`)).join(' ');
+  // Подписи оси X — месяцы
+  const mStep = (a1 - a0) / 30.44 > 14 ? 6 : (a1 - a0) / 30.44 > 7 ? 2 : 1;
+  const xt = []; for (let m = Math.ceil(a0 / 30.44); m * 30.44 <= a1; m++) if (m % mStep === 0) xt.push(m);
+  const nice = (v1 - v0) > 20 ? 5 : (v1 - v0) > 8 ? 2 : (v1 - v0) > 3 ? 1 : 0.5;
+  const yt = []; for (let v = Math.ceil(v0 / nice) * nice; v <= v1; v += nice) yt.push(v);
+  const last = pts[pts.length - 1], lp = last ? whoPercentile(k, last.v, last.date) : null;
+  const who = sex === 'f' ? 'девочек' : 'мальчиков';
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="График: ${label} и норма ВОЗ">
+    ${yt.map(v => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(nice < 1 ? 1 : 0).replace('.', ',')}</text>`).join('')}
+    <polygon class="band97" points="${band('lo3', 'hi97')}"/>
+    <polygon class="band85" points="${band('lo15', 'hi15')}"/>
+    <polyline class="median" points="${samp.map(s => x(s.a).toFixed(1) + ',' + y(s.m).toFixed(1)).join(' ')}"/>
+    ${xt.map(m => `<text x="${x(m * 30.44)}" y="${H - 6}" text-anchor="middle">${m < 12 ? m + ' мес' : (m % 12 ? (m / 12).toFixed(1).replace('.', ',') : m / 12) + (m < 24 ? ' год' : ' г.')}</text>`).join('')}
+    ${pts.length > 1 ? `<polyline class="line" points="${pts.map(p => x(p.a) + ',' + y(p.v)).join(' ')}"/>` : ''}
+    ${pts.map(p => `<circle class="pt" cx="${x(p.a)}" cy="${y(p.v)}" r="4"/>`).join('')}
+  </svg>
+  <div class="who-legend"><span><i class="lg97"></i>норма ВОЗ (3–97%)</span><span><i class="lg85"></i>чаще всего (15–85%)</span><span><i class="lgm"></i>медиана</span></div>
+  ${lp ? `<p class="who-now ${lp.cls}"><b>${fmt(last.v)} ${unit} — ${pctTxt(lp)}-й перцентиль</b><br>${lp.cls === 'ok' ? `В пределах нормы ВОЗ для ${who} этого возраста.` : lp.cls === 'low' ? `Ниже коридора нормы ВОЗ — стоит обсудить с педиатром.` : `Выше коридора нормы ВОЗ — стоит обсудить с педиатром.`} Из 100 ${who} этого возраста примерно у ${Math.max(1, Math.min(99, Math.round(lp.pct)))} ${label.toLowerCase() === 'голова' ? 'окружность головы' : label.toLowerCase()} меньше.</p>` : `<p class="hint" style="margin:8px 0 0">Добавьте замер — точка появится на графике.</p>`}
+  <p class="hint" style="margin:6px 0 0">Важнее не точное место в коридоре, а то, что малыш растёт «по своей линии». Резкие переходы через несколько линий стоит показать педиатру. Стандарты роста ВОЗ, 2006.</p>`;
 }
 
 /* ---------------- Шторка-форма ---------------- */
@@ -1331,6 +1394,7 @@ function settingsForm() {
   openSheet('Настройки',
     field('Имя малыша', `<input name="name" value="${esc(p.name)}" placeholder="Например, Миша" maxlength="40">`) +
     field('Дата рождения', `<input type="date" name="birth" value="${esc(p.birth)}" max="${todayStr()}">`) +
+    group('Пол', seg('sex', [['f', 'Девочка'], ['m', 'Мальчик']], p.sex || '')) +
     group('Тема', seg('theme', [['auto', 'Как в системе'], ['light', 'Светлая'], ['dark', 'Тёмная']], p.theme || 'auto')) +
     sleepSettingsBlock() +
     syncBlock() +
@@ -1364,6 +1428,7 @@ function applySettings(fd) {
   if (changed('name')) P.name = String(fd.name).trim();
   if (changed('birth')) P.birth = fd.birth;
   if (changed('theme')) P.theme = fd.theme;
+  if (changed('sex')) P.sex = fd.sex;
   const sc = { ...sleepCfg() };
   let scDirty = false;
   const set = (key, val) => { sc[key] = val; scDirty = true; };

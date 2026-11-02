@@ -91,5 +91,10 @@ async def main():
         await pb.click('[data-act=settings]'); await pb.click('.seg label:has-text("Задать вручную")'); await pb.click('.sheet footer .btn.primary'); await pb.wait_for_timeout(600)
         sb=await S(pb); sc=sb['profile'].get('sleepCfg',{})
         ok(sc.get('nightMode')=='manual' and sc.get('bedtime') and sc.get('wake'), f'4) ручной режим ночи сохранён: {sc.get("nightMode")} {sc.get("bedtime")}–{sc.get("wake")}')
+        # 5) Пол малыша синхронизируется и не теряется при правке других полей
+        await pb.click('[data-act=settings]'); await pb.click('.seg label:has-text("Девочка")'); await pb.click('.sheet footer .btn.primary'); await pb.wait_for_timeout(900)
+        await pa.click('[data-act=settings]'); await pa.fill('[name=name]','Каролина'); await pa.click('.sheet footer .btn.primary'); await pa.wait_for_timeout(900)
+        sa,sb=await S(pa),await S(pb)
+        ok(sa['profile'].get('sex')=='f' and sb['profile'].get('sex')=='f' and sa['profile']['name']=='Каролина'==sb['profile']['name'] and sa['profile'].get('sleepCfg',{}).get('nightMode')=='manual', f"5) пол и имя у обоих: {sa['profile'].get('sex')}/{sb['profile'].get('sex')}, {sa['profile']['name']}/{sb['profile']['name']}, режим ночи сохранён")
         print('errors',errs); await b.close()
 asyncio.run(main())
