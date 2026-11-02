@@ -559,3 +559,21 @@ button.tile.live { cursor: pointer; }
 .who-now.low, .who-now.high { background: var(--growth-soft); }
 .who-pill { font-style: normal; font-size: 11.5px; font-weight: 800; justify-self: start; margin-top: 4px; padding: 2px 7px; border-radius: 99px; background: var(--ok-soft); color: var(--ok); }
 .who-pill.low, .who-pill.high { background: var(--growth-soft); color: var(--growth); }
+
+/* ---- 1.11.0: отчёт для педиатра ---- */
+.top-btns { display: flex; gap: 8px; flex: none; }
+.chip.on { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
+#report { position: fixed; inset: 0; z-index: 60; background: #fff; overflow-y: auto; -webkit-overflow-scrolling: touch; color-scheme: light; }
+.rep-bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: calc(10px + env(safe-area-inset-top)) 12px 10px; background: rgba(255,255,255,.96); border-bottom: 1px solid #eadfd5; }
+.rep-bar span { flex: 1; }
+.rep-bar .btn { color: #2e2621; background: #f5ece4; }
+.rep-bar .btn.primary { background: #d9775b; color: #fff; }
+.rep-bar .btn.ghost { background: transparent; }
+@media print {
+  html, body { height: auto !important; overflow: visible !important; position: static !important; background: #fff !important; }
+  body.rep-open > *:not(#report) { display: none !important; }
+  #report { position: static; overflow: visible; }
+  .rep-bar { display: none; }
+  .rep { padding: 0; max-width: none; }
+  @page { margin: 14mm 12mm; }
+}

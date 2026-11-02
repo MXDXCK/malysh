@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.11.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -182,6 +182,7 @@ const I = {
   x: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
   check: svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>'),
   refresh: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
+  doc: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>'),
   sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
   drop: svg('<path d="M12 3.5c3 3.6 6 7.2 6 10.5a6 6 0 0 1-12 0c0-3.3 3-6.9 6-10.5z"/>'),
   chevL: svg('<path d="m15 18-6-6 6-6"/>'),
@@ -350,7 +351,7 @@ function applyTheme() {
 function header() {
   const p = S.profile;
   return `<header class="top"><div class="who"><div class="avatar">${esc((p.name || 'М').trim()[0] || 'М').toUpperCase()}</div><div><h1>${esc(p.name || 'Малыш')}</h1><p>${p.birth ? ageText(p.birth) : 'Дневник мамы'}</p></div></div>
-  <button class="icon-btn" data-act="settings" aria-label="Настройки">${I.sliders}${update ? '<i class="badge"></i>' : ''}${window.Sync && window.Sync.family ? `<i class="sync" data-s="${window.Sync.status}" title="Синхронизация"></i>` : ''}</button></header>`;
+  <span class="top-btns"><button class="icon-btn" data-act="report" aria-label="Отчёт для педиатра">${I.doc}</button><button class="icon-btn" data-act="settings" aria-label="Настройки">${I.sliders}${update ? '<i class="badge"></i>' : ''}${window.Sync && window.Sync.family ? `<i class="sync" data-s="${window.Sync.status}" title="Синхронизация"></i>` : ''}</button></span></header>`;
 }
 function tabbar() {
   return `<div class="tabbar"><nav>${TABS.map(([k, l, ic]) => `<a href="#${k}" class="${tab === k ? 'on' : ''}" ${tab === k ? 'aria-current="page"' : ''}><span class="pip">${ic}</span>${l}</a>`).join('')}</nav></div>`;
@@ -1535,6 +1536,7 @@ const ACTIONS = {
   'add-stool': () => stoolForm(),
   'add-custom': () => customForm(), 'mark-past': markPast,
   settings: settingsForm, whatsnew: whatsNew,
+  report: () => window.reportForm && window.reportForm(),
 };
 const FORMS = { bottle: bottleForm, solid: solidForm, sleep: sleepForm, stool: stoolForm };
 
