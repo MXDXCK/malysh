@@ -191,4 +191,5 @@ document.addEventListener('click', async e => {
   }
 });
 window.walkCard = walkCard;
-if (typeof render === 'function' && !dlg.open) render(); // карточка появилась после первой отрисовки app.js
+// app.js уже нарисовал экран без карточки: перерисуем сейчас или сразу после закрытия открытого окна
+if (dlg.open) renderPending = true; else render();
