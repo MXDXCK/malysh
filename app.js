@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.12.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -938,6 +938,7 @@ const VIEWS = {
       ${(() => { const nm = sleepNorm(); const nc = nm ? normCls(sleepDur(n), nm.night, nightDone(n)) : '', dc = nm ? normCls(sleepDur(dd), nm.day, dayDone(D)) : '';
         return `<div class="sleep-sum"><div class="night ${nc}"><small>${(evening || lateNight) ? 'Эта ночь' : 'Прошлая ночь'}</small><b>${n.length ? durS(sleepDur(n)) : '—'}</b>${nm ? `<em>норма ${normTxt(nm.night)}</em>` : ''}</div><div class="day ${dc}"><small>Днём сегодня</small><b>${dd.length ? durS(sleepDur(dd)) : '—'}</b>${nm ? `<em>норма ${normTxt(nm.day)}</em>` : ''}</div></div>`; })()}
       ${sleepBlocks(D, nightD, (evening || lateNight) ? 'Эта ночь' : 'Прошлая ночь')}</section>`;
+    if (window.walkCard) out += walkCard();
     out += `<section class="quick">
       <button class="q feed" data-act="add-bottle">${I.bottle}<span>Бутылочка</span></button>
       <button class="q solid" data-act="add-solid">${I.bowl}<span>Прикорм</span></button>
