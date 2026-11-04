@@ -17,56 +17,87 @@ const WMO = c => (c === 0 ? ['Ясно', '☀️'] : c <= 2 ? ['Малообла
   c <= 57 ? ['Морось', '🌦'] : c <= 67 ? ['Дождь', '🌧'] : c <= 77 ? ['Снег', '🌨'] : c <= 82 ? ['Ливень', '🌧'] : c <= 86 ? ['Снегопад', '🌨'] : ['Гроза', '⛈']);
 const isRain = c => (c >= 51 && c <= 67) || (c >= 80 && c <= 82) || c >= 95;
 const isSnow = c => (c >= 71 && c <= 77) || c === 85 || c === 86;
-let wkLoading = false, wkError = '', wkLastTry = 0;
+let wkLoading = false, wkError = '', wkLastTry = 0, wkRun = 0;
 
+// Ограничение по времени: iPhone иногда не отвечает на запрос геолокации вовсе,
+// а встроенный timeout геолокации начинает отсчёт только после разрешения.
+const wkTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(msg), { timeout: true })), ms))]);
+async function wkGet(url, ms = 12000) {
+  const ctl = window.AbortController ? new AbortController() : null;
+  const t = setTimeout(() => ctl && ctl.abort(), ms);
+  try {
+    const r = await wkTimeout(fetch(url, ctl ? { signal: ctl.signal } : {}), ms + 500, 'net-timeout');
+    if (!r.ok) throw new Error('net ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
 async function wkFetch(lat, lon) {
   const u = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat.toFixed(3) + '&longitude=' + lon.toFixed(3) +
     '&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_gusts_10m,is_day,uv_index' +
     '&hourly=temperature_2m,apparent_temperature,precipitation_probability,weather_code,wind_speed_10m' +
     '&forecast_hours=6&wind_speed_unit=ms&timezone=auto';
-  const r = await fetch(u); if (!r.ok) throw new Error('weather ' + r.status);
-  const j = await r.json(), c = j.current;
+  const j = await wkGet(u), c = j.current;
   const hours = (j.hourly && j.hourly.time || []).map((t, i) => ({ t, temp: j.hourly.temperature_2m[i], feels: j.hourly.apparent_temperature[i], pop: j.hourly.precipitation_probability[i], code: j.hourly.weather_code[i], wind: j.hourly.wind_speed_10m[i] }));
   return { at: Date.now(), temp: c.temperature_2m, feels: c.apparent_temperature, hum: c.relative_humidity_2m, prec: c.precipitation, code: c.weather_code, cloud: c.cloud_cover, wind: c.wind_speed_10m, gust: c.wind_gusts_10m, day: c.is_day, uv: c.uv_index, hours };
 }
 async function wkPlace(lat, lon) {
   try {
-    const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ru`);
-    const j = await r.json(); return j.city || j.locality || j.principalSubdivision || '';
+    const j = await wkGet(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ru`, 8000);
+    return j.city || j.locality || j.principalSubdivision || '';
   } catch (e) { return ''; }
 }
 function wkLocate() {
-  return new Promise((res, rej) => {
-    if (!navigator.geolocation) return rej(new Error('Геолокация недоступна'));
+  return wkTimeout(new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error('nogeo'));
     navigator.geolocation.getCurrentPosition(p => res([p.coords.latitude, p.coords.longitude]),
-      e => rej(new Error(e.code === 1 ? 'Нет доступа к геолокации' : 'Не удалось определить место')), { enableHighAccuracy: false, timeout: 15000, maximumAge: 30 * MIN });
-  });
+      e => rej(Object.assign(new Error(e.code === 1 ? 'denied' : 'unavailable'), { geo: e.code })), { enableHighAccuracy: false, timeout: 15000, maximumAge: 60 * MIN });
+  }), 20000, 'geo-timeout');
 }
+const WK_MSG = {
+  denied: 'Нет доступа к геолокации. Включите: Настройки iPhone → Конфиденциальность и безопасность → Службы геолокации → Сайты Safari → «При использовании». Или просто выберите город.',
+  'geo-timeout': 'iPhone не сообщил местоположение за 20 секунд. Выберите город — это быстрее и работает всегда.',
+  unavailable: 'Не удалось определить место. Выберите город вручную.',
+  nogeo: 'На этом устройстве геолокация недоступна. Выберите город.',
+  net: 'Не удалось загрузить погоду — нет интернета? Попробуйте ещё раз.',
+};
 // relocate: запросить место заново (по кнопке); иначе — по сохранённым координатам
 async function wkRefresh(relocate) {
-  if (wkLoading) return; wkLoading = true; wkError = ''; wkRerender();
+  if (wkLoading) return;
+  const run = ++wkRun; wkLoading = true; wkError = ''; wkRerender();
+  const stale = () => run !== wkRun; // нажали «Отмена» или запустили заново
   try {
     let p = wkPrefs();
     if (relocate || p.lat == null) {
-      const [lat, lon] = await wkLocate();
-      wkSave({ lat, lon, place: await wkPlace(lat, lon), manual: false }); p = wkPrefs();
+      try {
+        const [lat, lon] = await wkLocate();
+        if (stale()) return;
+        const moved = p.lat == null || Math.abs(lat - p.lat) > 0.05 || Math.abs(lon - p.lon) > 0.05;
+        wkSave({ lat, lon, manual: false, ...(moved ? { place: '' } : {}) }); p = wkPrefs();
+        if (moved || !p.place) wkPlace(lat, lon).then(place => { if (place && !stale()) { wkSave({ place }); wkRerender(); } }); // не ждём — название подпишется позже
+      } catch (e) {
+        if (stale()) return;
+        if (p.lat == null) throw e;
+        wkError = (e.message === 'denied' ? 'Нет доступа к геолокации' : 'iPhone не сообщил местоположение') + ' — показываю погоду для прошлого места' + (p.place ? ' (' + p.place + ')' : '') + '.';
+      }
     }
     const w = await wkFetch(p.lat, p.lon);
+    if (stale()) return;
     localStorage.setItem(WK_CACHE, JSON.stringify(w));
   } catch (e) {
-    wkError = e.message === 'Нет доступа к геолокации'
-      ? 'Нет доступа к геолокации. Разрешите её: Настройки iPhone → Конфиденциальность → Службы геолокации → Safari (Веб-сайты), — или выберите город вручную.'
-      : /weather|fetch|Failed|Load/i.test(e.message) ? 'Не удалось загрузить погоду — нет интернета?' : e.message;
+    if (stale()) return;
+    wkError = WK_MSG[e.message] || (/net|fetch|Failed|Load|abort/i.test(e.message) ? WK_MSG.net : WK_MSG.unavailable);
   }
+  if (stale()) return;
   wkLoading = false; wkRerender();
 }
+function wkCancel() { wkRun++; wkLoading = false; wkError = ''; wkRerender(); }
 function wkRerender() {
   if (dlg.open && dlg.querySelector('.walk-sheet')) walkSheet(true);
   else if (!dlg.open && (location.hash || '#today') === '#today') render();
 }
 async function wkCity(name) {
-  const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=5&language=ru&name=' + encodeURIComponent(name));
-  const j = await r.json(); return (j.results || []).map(x => ({ name: x.name, region: [x.admin1, x.country].filter(Boolean).join(', '), lat: x.latitude, lon: x.longitude }));
+  const j = await wkGet('https://geocoding-api.open-meteo.com/v1/search?count=5&language=ru&name=' + encodeURIComponent(name), 10000);
+  return (j.results || []).map(x => ({ name: x.name, region: [x.admin1, x.country].filter(Boolean).join(', '), lat: x.latitude, lon: x.longitude }));
 }
 
 /* ---- Что надеть ---- */
@@ -128,11 +159,13 @@ function walkCard() {
     return `<section class="card walk-card"><div class="card-head"><h3>Прогулка</h3></div>
       <p class="hint" style="margin:0 0 10px">Покажу погоду рядом с вами и подскажу, как одеть малыша: с учётом ветра, солнца, дождя и возраста.</p>
       ${wkError ? `<p class="norm-warn" style="margin:0 0 10px">${esc(wkError)}</p>` : ''}
-      <div class="actions-row"><button class="btn primary" data-wk="locate">${wkLoading ? 'Определяю место…' : '📍 Показать погоду рядом'}</button><button class="btn" data-wk="more">Выбрать город</button></div></section>`;
+      <div class="actions-row">${wkLoading ? `<button class="btn primary" disabled>Определяю место…</button><button class="btn" data-wk="cancel">Отмена</button>` : `<button class="btn primary" data-wk="locate">📍 Показать погоду рядом</button>`}<button class="btn" data-wk="more">Выбрать город</button></div>
+      ${wkLoading ? '<p class="hint" style="margin:8px 0 0">Если iPhone спросит разрешение — нажмите «Разрешить». Не получится за 20 секунд — подскажу, что делать.</p>' : ''}</section>`;
   }
   if (Date.now() - w.at > 20 * MIN && !wkLoading && navigator.onLine !== false && Date.now() - wkLastTry > 2 * MIN) { wkLastTry = Date.now(); setTimeout(() => wkRefresh(false), 0); }
   const a = wkAdvice(w), [wt, wi] = WMO(w.code);
   return `<section class="card walk-card ${a.outfit.danger ? 'danger' : ''}"><div class="card-head"><h3>Прогулка</h3><button class="link" data-wk="more">Подробнее ›</button></div>
+    ${wkError ? `<p class="norm-warn" style="margin:0 0 10px">${esc(wkError)}</p>` : ''}
     <button class="wk-weather" data-wk="more"><span class="wk-ico">${wi}</span><span><b>${Math.round(w.temp)}°</b> <em>ощущается ${Math.round(w.feels)}°</em><small>${wt} · ветер ${Math.round(w.wind)} м/с${p.place ? ' · ' + esc(p.place) : ''}</small></span></button>
     <div class="wk-out"><small>Что надеть · ${a.outfit.title.toLowerCase()}</small><p class="wk-eff">${p.mode === 'carrier' ? 'В слинге' : 'В коляске'} малыш ощущает ≈ ${Math.round(a.eff)}°${p.pref ? (p.pref < 0 ? ' (учли, что мёрзнет)' : ' (учли, что потеет)') : ''}</p>
       <ul>${a.items.map(([i, t]) => `<li><span>${i}</span>${esc(t)}</li>`).join('')}</ul></div>
@@ -150,7 +183,7 @@ function walkSheet(refresh) {
     ${wkError ? `<p class="norm-warn">${esc(wkError)}</p>` : ''}
     ${group('Как гуляем', seg('wk_mode', [['stroller', '🛒 В коляске'], ['carrier', '🤱 В слинге / на руках']], p.mode))}
     ${group('Малыш обычно', seg('wk_pref', [['-1', '🥶 Мёрзнет'], ['0', 'Как все'], ['1', '🥵 Потеет']], String(p.pref || 0)))}
-    <div class="actions-row"><button type="button" class="btn" data-wk="locate">${wkLoading ? 'Обновляю…' : '📍 Моё место сейчас'}</button></div>
+    <div class="actions-row">${wkLoading ? `<button type="button" class="btn" disabled>Обновляю…</button><button type="button" class="btn ghost" data-wk="cancel">Отмена</button>` : `<button type="button" class="btn" data-wk="locate">📍 Моё место сейчас</button>`}</div>
     <label class="field"><span>Или найдите город</span><input name="wk_city" placeholder="Например, Самара" autocomplete="off"></label>
     <div class="actions-row"><button type="button" class="btn small" data-wk="city">Найти</button></div>
     <div class="wk-found"></div>
@@ -171,7 +204,8 @@ function walkSheet(refresh) {
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-wk]'); if (!b) return;
   const act = b.dataset.wk;
-  if (act === 'locate') { unlockAudio && unlockAudio(); wkRefresh(true); return; }
+  if (act === 'locate') { wkRefresh(true); return; }
+  if (act === 'cancel') { wkCancel(); return; }
   if (act === 'more') { walkSheet(); return; }
   if (act === 'city') {
     const q = (dlg.querySelector('[name=wk_city]') || {}).value || ''; const box = dlg.querySelector('.wk-found');
@@ -187,6 +221,7 @@ document.addEventListener('click', async e => {
   if (act === 'pick') {
     const box = dlg.querySelector('.wk-found'), c = box && box._list && box._list[+b.dataset.i]; if (!c) return;
     wkSave({ lat: c.lat, lon: c.lon, place: c.name, manual: true });
+    if (wkLoading) wkCancel();
     await wkRefresh(false); return;
   }
 });
