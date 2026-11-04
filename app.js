@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.12.1';
+const APP_VERSION = '1.12.2';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -1203,7 +1203,8 @@ function openSheet(title, body, onSubmit, opts = {}) {
   const af = f.querySelector('[autofocus]'); if (af && !matchMedia('(pointer:coarse)').matches) af.focus();
 }
 dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
-dlg.addEventListener('close', () => { if (renderPending) { renderPending = false; render(); } });
+// После закрытия любого окна перерисовываем экран: за это время могли прийти данные или догрузиться части приложения
+dlg.addEventListener('close', () => { renderPending = false; render(); });
 
 const field = (label, input, hint = '') => `<label class="field"><span>${label}</span>${input}${hint ? `<small>${hint}</small>` : ''}</label>`;
 const group = (label, html) => `<div class="field"><span>${label}</span>${html}</div>`;
