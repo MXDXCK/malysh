@@ -604,3 +604,79 @@ button.tile.live { cursor: pointer; }
 .walk-sheet { display: grid; gap: 14px; }
 .wk-found .row { border-radius: 12px; background: var(--surface); margin-top: 6px; }
 .wk-eff { font-size: 12.5px; color: var(--muted); font-weight: 600; margin: 1px 0 0; }
+
+/* ---- 1.13.0: анимации ---- */
+/* Заставка при входе */
+#splash { position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 8px; background: var(--bg); transition: opacity .42s ease; }
+#splash.hide { opacity: 0; pointer-events: none; }
+.sp-heart { width: 96px; height: 96px; border-radius: 26px; overflow: hidden; margin-bottom: 8px; box-shadow: 0 14px 34px rgba(208,106,78,.35);
+  animation: sp-pop .55s cubic-bezier(.2,1.4,.4,1) both, sp-beat 1.2s .55s ease-in-out infinite; }
+.sp-heart svg { width: 100%; height: 100%; display: block; }
+#splash.hide .sp-heart { transform: scale(1.12); transition: transform .42s ease; animation: none; }
+.sp-name { font-size: 26px; font-weight: 800; animation: sp-rise .5s .15s ease-out both; }
+.sp-sub { color: var(--muted); font-weight: 700; font-size: 14px; animation: sp-rise .5s .25s ease-out both; }
+@keyframes sp-pop { from { transform: scale(.4); opacity: 0; } }
+@keyframes sp-beat { 0%, 100% { transform: scale(1); } 14% { transform: scale(1.08); } 28% { transform: scale(1); } 42% { transform: scale(1.05); } 56% { transform: scale(1); } }
+@keyframes sp-rise { from { opacity: 0; transform: translateY(10px); } }
+
+/* Появление экрана: карточки по очереди снизу (вход, смена вкладки, листание дней) */
+.view.anim > * { animation: rise .45s cubic-bezier(.2,.8,.2,1) both; }
+.view.anim > *:nth-child(2) { animation-delay: .04s; }
+.view.anim > *:nth-child(3) { animation-delay: .08s; }
+.view.anim > *:nth-child(4) { animation-delay: .12s; }
+.view.anim > *:nth-child(5) { animation-delay: .16s; }
+.view.anim > *:nth-child(6) { animation-delay: .2s; }
+.view.anim > *:nth-child(n+7) { animation-delay: .24s; }
+body.splashing .view.anim > *, body.splashing .view.anim * { animation-play-state: paused !important; }
+@keyframes rise { from { opacity: 0; transform: translateY(16px); } }
+
+/* Нижнее меню: активная вкладка «подпрыгивает» */
+.tabbar a .pip { transition: background-color .25s, color .25s; }
+.tabbar.anim a.on .pip { animation: pip .5s cubic-bezier(.2,1.6,.4,1); }
+.tabbar.anim a.on .pip svg { animation: pip-ico .5s cubic-bezier(.2,1.6,.4,1); }
+@keyframes pip { from { transform: scaleX(.5); opacity: .4; } }
+@keyframes pip-ico { from { transform: translateY(3px) scale(.85); } }
+
+/* Мягкое нажатие */
+.btn, .q, .row, .tile, .side, .chip, .icon-btn, button.stat, .wk-weather, .check { transition: transform .16s ease, background-color .2s, box-shadow .2s, border-color .2s; }
+.btn:active, .q:active, .tile:active, .icon-btn:active, button.stat:active, .chip:active { transform: scale(.96); }
+
+/* Шторка: плавно выезжает и уезжает, фон затемняется */
+dialog[open] { animation: sheet-up .32s cubic-bezier(.2,.9,.3,1); }
+dialog[open]::backdrop { animation: fade-in .3s ease; }
+dialog.closing { animation: sheet-down .19s ease-in forwards; }
+dialog.closing::backdrop { animation: fade-out .19s ease-in forwards; }
+@keyframes sheet-up { from { transform: translateY(70px); opacity: .2; } }
+@keyframes sheet-down { to { transform: translateY(80px); opacity: 0; } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+@media (min-width: 600px) { @keyframes sheet-up { from { transform: translateY(24px) scale(.97); opacity: 0; } } }
+
+/* Полоски прогресса заполняются */
+.view.anim .norm-bar i, .view.anim .progress i, .view.anim .fc-bar i { transform-origin: left center; animation: grow-x .8s .2s cubic-bezier(.2,.8,.2,1) both; }
+.view.anim .bar i { transform-origin: center bottom; animation: grow-y .7s .15s cubic-bezier(.2,.8,.2,1) both; }
+.view.anim .chart .line { stroke-dasharray: 100; animation: draw 1.2s .2s ease-out both; }
+@keyframes grow-x { from { transform: scaleX(0); } }
+@keyframes grow-y { from { transform: scaleY(0); } }
+@keyframes draw { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+
+/* Идущий сон «дышит» */
+.sleep-now:not(.idle) { animation: breathe 3.4s ease-in-out infinite; }
+.tile.live { animation: breathe 3.4s ease-in-out infinite; }
+@keyframes breathe { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--sleep) 18%, transparent); } }
+.sleep-now.day:not(.idle) { animation-name: breathe-day; }
+@keyframes breathe-day { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--growth) 20%, transparent); } }
+
+/* Галочка «щёлкает» */
+.check.pop { animation: check-pop .38s cubic-bezier(.2,1.6,.4,1); }
+@keyframes check-pop { 0% { transform: scale(.6); } 100% { transform: scale(1); } }
+
+/* Погода: значок мягко появляется */
+.view.anim .wk-ico { animation: wk-in .7s .25s cubic-bezier(.2,1.4,.4,1) both; }
+@keyframes wk-in { from { transform: translateY(-8px) scale(.7); opacity: 0; } }
+
+/* Отчёт выезжает снизу */
+#report { animation: sheet-up .35s cubic-bezier(.2,.9,.3,1); }
+
+/* Пользователям с «Уменьшением движения» — без анимаций (правило выше уже отключает их) */
+@media (prefers-reduced-motion: reduce) { #splash { display: none; } }

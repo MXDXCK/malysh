@@ -5,7 +5,7 @@
  * Обновления: приложение сверяет APP_VERSION с файлом version.json на сайте.
  */
 
-const APP_VERSION = '1.12.3';
+const APP_VERSION = '1.13.0';
 const KEY = 'malysh.v1';
 const MIN = 6e4, HOUR = 36e5, DAY = 864e5;
 const $ = (s, r = document) => r.querySelector(s);
@@ -357,14 +357,17 @@ function tabbar() {
   return `<div class="tabbar"><nav>${TABS.map(([k, l, ic]) => `<a href="#${k}" class="${tab === k ? 'on' : ''}" ${tab === k ? 'aria-current="page"' : ''}><span class="pip">${ic}</span>${l}</a>`).join('')}</nav></div>`;
 }
 let resetScroll = false;
+let lastTab = null, animNext = false;
 function render() {
   nightCache = null; gapCache = null;
+  const animate = animNext || tab !== lastTab; animNext = false; lastTab = tab;
   applyTheme();
   if (!VIEWS[tab]) tab = 'today';
   const old = $('#scroller'), y = old ? old.scrollTop : 0;
   $('#app').innerHTML = header() + updateStrip() + `<div id="scroller" class="scroller"><main class="view">${VIEWS[tab]()}</main></div>` + tabbar();
   const sc = $('#scroller'); if (sc && y && !resetScroll) sc.scrollTop = y;
   resetScroll = false;
+  if (animate) { const v = $('main.view'), tb = $('.tabbar'); if (v) v.classList.add('anim'); if (tb) tb.classList.add('anim'); }
   tick();
 }
 function tick() {
@@ -1145,7 +1148,7 @@ function growthChart(g, k, [label, unit, dec]) {
     const x = t => L + (t - t0) / (t1 - t0) * (W - L - R), y = v => T + (1 - (v - v0) / (v1 - v0)) * (H - T - B);
     return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="График: ${label}">
       ${[v0 + padV, v1 - padV].map(v => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`).join('')}
-      <polyline class="line" points="${pts.map(p => x(p.t) + ',' + y(p.v)).join(' ')}"/>
+      <polyline class="line" pathLength="100" points="${pts.map(p => x(p.t) + ',' + y(p.v)).join(' ')}"/>
       ${pts.map(p => `<circle class="pt" cx="${x(p.t)}" cy="${y(p.v)}" r="4"/>`).join('')}
     </svg><p class="hint" style="margin:6px 0 0">${label}, ${unit}</p>` + ask;
   }
@@ -1175,7 +1178,7 @@ function growthChart(g, k, [label, unit, dec]) {
     <polygon class="band85" points="${band('lo15', 'hi15')}"/>
     <polyline class="median" points="${samp.map(s => x(s.a).toFixed(1) + ',' + y(s.m).toFixed(1)).join(' ')}"/>
     ${xt.map(m => `<text x="${x(m * 30.44)}" y="${H - 6}" text-anchor="middle">${m < 12 ? m + ' мес' : (m % 12 ? (m / 12).toFixed(1).replace('.', ',') : m / 12) + (m < 24 ? ' год' : ' г.')}</text>`).join('')}
-    ${pts.length > 1 ? `<polyline class="line" points="${pts.map(p => x(p.a) + ',' + y(p.v)).join(' ')}"/>` : ''}
+    ${pts.length > 1 ? `<polyline class="line" pathLength="100" points="${pts.map(p => x(p.a) + ',' + y(p.v)).join(' ')}"/>` : ''}
     ${pts.map(p => `<circle class="pt" cx="${x(p.a)}" cy="${y(p.v)}" r="4"/>`).join('')}
   </svg>
   <div class="who-legend"><span><i class="lg97"></i>норма ВОЗ (3–97%)</span><span><i class="lg85"></i>чаще всего (15–85%)</span><span><i class="lgm"></i>медиана</span></div>
@@ -1185,8 +1188,18 @@ function growthChart(g, k, [label, unit, dec]) {
 
 /* ---------------- Шторка-форма ---------------- */
 const dlg = $('#sheet');
+// Плавное закрытие шторки: сначала анимация, потом настоящее закрытие
+const nativeClose = dlg.close.bind(dlg);
+let dlgClosing = null;
+dlg.close = function (v) {
+  if (!dlg.open || dlgClosing) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return nativeClose(v);
+  dlg.classList.add('closing');
+  dlgClosing = setTimeout(() => { dlgClosing = null; dlg.classList.remove('closing'); nativeClose(v); }, 190);
+};
 let sheetDel = null;
 function openSheet(title, body, onSubmit, opts = {}) {
+  if (dlgClosing) { clearTimeout(dlgClosing); dlgClosing = null; dlg.classList.remove('closing'); }
   dlg.innerHTML = `<form class="sheet" novalidate><header><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="Закрыть">${I.x}</button></header>
     <div class="sheet-body">${body}</div>
     ${onSubmit ? `<footer>${opts.del ? `<button type="button" class="btn ghost danger" data-del>${opts.delLabel || 'Удалить'}</button>` : ''}<button class="btn primary">${opts.ok || 'Сохранить'}</button></footer>` : ''}</form>`;
@@ -1296,6 +1309,7 @@ function toggleProduct(key) {
   if (s.done) { st.done = ''; st.start = st.start || s.start; toast('Отметка снята'); }
   else { st.done = todayStr(); st.start = st.start || s.start || todayStr(); toast(p.name + ' — введён ✓'); }
   S.solids[key] = st; save(); render();
+  const c = document.querySelector(`[data-spc="${key}"]`); if (c) c.classList.add('pop');
 }
 // Идущий сон: поправить «Уснул», тип сна или сразу указать «Проснулся»
 function liveSleepForm() {
@@ -1549,7 +1563,7 @@ document.addEventListener('click', e => {
   if (d.act && ACTIONS[d.act]) return ACTIONS[d.act](t);
   if (d.spc) return toggleProduct(d.spc);
   if (d.sp) return productForm(d.sp);
-  if (d.day) { const n = dateStr(addDays(parseDate(sleepDay).getTime(), +d.day)); sleepDay = n > todayStr() ? todayStr() : n; return render(); }
+  if (d.day) { const n = dateStr(addDays(parseDate(sleepDay).getTime(), +d.day)); sleepDay = n > todayStr() ? todayStr() : n; animNext = true; return render(); }
   if (d.fill) { const f = dlg.querySelector(`[name=${d.fill}]`); if (f) f.value = todayStr(); if (d.fill === 'done') { const st = dlg.querySelector('[name=start]'); if (st && !st.value) st.value = todayStr(); } return; }
   if (d.g) { const f = dlg.querySelector('[name=grams]'); if (f) f.value = d.g; return; }
   if (d.ago) { const f = dlg.querySelector('[name=start]'); if (f) f.value = dtl(Date.now() - (+d.ago) * MIN); return; }
@@ -1614,6 +1628,12 @@ setInterval(tick, 1000);
 setInterval(checkAlerts, 20000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAlerts(); });
 setInterval(() => { if (!dlg.open) render(); }, 30000);
+{ const sp = $('#splash'); if (sp && S.profile.name) sp.querySelector('.sp-name').textContent = S.profile.name; }
 render();
+{ // заставка не меньше ~0,7 с от запуска, затем исчезает, и карточки начинают появляться
+  const sp = $('#splash');
+  const hide = () => { document.body.classList.remove('splashing'); if (!dlg.open) { animNext = true; render(); } if (sp) { sp.classList.add('hide'); setTimeout(() => sp.remove(), 450); } };
+  setTimeout(hide, Math.max(500, 1000 - performance.now()));
+}
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 if (location.protocol !== 'file:') { checkUpdate(false); showUpdatedOnce(); }

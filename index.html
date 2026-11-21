@@ -19,7 +19,12 @@
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="splashing">
+  <div id="splash" aria-hidden="true">
+    <div class="sp-heart"><svg viewBox="0 0 512 512"><defs><linearGradient id="spg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#E58A6D"/><stop offset="1" stop-color="#D06A4E"/></linearGradient></defs><rect width="512" height="512" fill="url(#spg)"/><path d="M256 392s-118-72-118-160a68 68 0 0 1 118-46 68 68 0 0 1 118 46c0 88-118 160-118 160z" fill="#FFF6EF"/><path d="M392 112a54 54 0 1 1-60-36 42 42 0 0 0 60 36z" fill="#FFE2D3"/></svg></div>
+    <div class="sp-name">Малыш</div>
+    <div class="sp-sub">дневник мамы</div>
+  </div>
   <div id="app"></div>
   <dialog id="sheet" aria-label="Форма"></dialog>
   <div id="toast" role="status" aria-live="polite"></div>

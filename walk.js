@@ -92,6 +92,7 @@ async function wkRefresh(relocate) {
 }
 function wkCancel() { wkRun++; wkLoading = false; wkError = ''; wkRerender(); }
 function wkRerender() {
+  if (dlg.open && dlg.classList.contains('closing')) return; // шторку как раз закрывают
   if (dlg.open && dlg.querySelector('.walk-sheet')) walkSheet(true);
   else if (!dlg.open && (location.hash || '#today') === '#today') render();
 }
